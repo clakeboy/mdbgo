@@ -12,7 +12,7 @@
 ## 安装
 
 ```bash
-go get github.com/clake/mdbtools-go/mdbgo
+go get github.com/clakeboy/mdbgo
 ```
 
 ## 快速示例
@@ -24,7 +24,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/clake/mdbtools-go/mdbgo"
+    "github.com/clakeboy/mdbgo"
 )
 
 func main() {

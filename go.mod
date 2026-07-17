@@ -1,4 +1,4 @@
-module github.com/clake/mdbtools-go/mdbgo
+module github.com/clakeboy/mdbgo
 
 go 1.22
 
