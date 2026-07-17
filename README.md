@@ -1,0 +1,114 @@
+# mdbgo (bundled mode)
+
+`mdbgo` 是一个可直接被其它 Go 项目引用的 MDB 读取库。
+
+- 使用 `bundled` 模式：构建时直接编译仓库内的 `libmdb` C 源码
+- 调用方不需要额外安装系统级 `libmdb`
+- 当前提供只读能力：打开数据库、列出表、读取整张表、读取 Access 窗体内容
+- 支持 SQL 查询执行：`Query(sql)`
+
+源码按职责拆分：`mdbgo.go` 只保留连接生命周期，`sql.go` 负责表和 SQL 数据读取，`form.go` 负责 Form 公共入口，`form_storage.go/form_layout.go` 负责内部存储与布局；各已实现的控件解析器位于独立的 `form_component_<type>.go` 文件中。
+
+## 安装
+
+```bash
+go get github.com/clake/mdbtools-go/mdbgo
+```
+
+## 快速示例
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/clake/mdbtools-go/mdbgo"
+)
+
+func main() {
+    db, err := mdbgo.Open("./example.mdb")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
+
+    tables, err := db.Tables()
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("tables:", tables)
+
+    if len(tables) == 0 {
+        return
+    }
+
+    data, err := db.ReadTable(tables[0])
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("columns:", data.Columns)
+    fmt.Println("rows:", len(data.Rows))
+
+    q, err := db.Query("SELECT * FROM [" + tables[0] + "] LIMIT 5")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("query rows:", len(q.Rows))
+
+    forms, err := db.ExportFormContents()
+    if err != nil {
+        log.Fatal(err)
+    }
+    for _, form := range forms {
+        fmt.Printf("form=%s recordSource=%s sections=%d\n",
+            form.FormName, form.RecordSource, len(form.Sections))
+        for _, section := range form.Sections {
+            fmt.Printf("  section=%s controls=%d\n", section.Type, len(section.Controls))
+            for _, control := range section.Controls {
+                fmt.Printf("    %s %s left=%d top=%d width=%d height=%d caption=%q source=%q\n",
+                    control.Type, control.Name, control.Left, control.Top,
+                    control.Width, control.Height, control.Caption, control.ControlSource)
+            }
+        }
+    }
+}
+```
+
+## API
+
+- `Open(path string) (*DB, error)`
+- `(*DB).Close() error`
+- `(*DB).Tables() ([]string, error)`
+- `(*DB).ReadTable(tableName string) (*TableData, error)`
+- `(*DB).Query(sql string) (*TableData, error)`
+- `(*DB).Schema(tableName string) (*TableSchema, error)`
+- `(*DB).ExportForms() ([]FormInfo, error)`：导出 Access Form 窗体和组件属性
+- `(*DB).ReadAccessObjectContainer() (*AccessObjectContainer, error)`：重组 `MSysAccessObjects.Data` 中的内部 OLE Compound 容器
+- `(*DB).ReadAccessObjectEntries() ([]AccessObjectEntry, error)`：读取内部 OLE 的目录与数据流
+- `(*DB).ReadFormObjectStreams(formName string) (*FormObjectStreams, error)`：读取指定窗体的 `Blob/TypeInfo/PropData/BlobDelta`
+- `(*DB).ReadFormContent(formName string) (*FormContent, error)`：读取单个窗体的 RecordSource、窗体宽度、`FormHeader/Detail/FormFooter` 分区、控件名、准确类型、twips 几何和常用文本属性；TextBox 额外直接输出 `Format/Tag/FontName/StatusBarText/TabIndex`，Label 直接输出 `Caption/Tag/FontName/FontSize/TextAlign`
+- `(*DB).ExportFormContents() ([]FormContent, error)`：一次重组 OLE 后批量导出全部窗体内容
+- `ParseFormTypeInfo(data []byte) ([]FormControlInfo, error)`：解析控件名、内部类型代码和索引
+- `ParseFormContent(streams *FormObjectStreams) (*FormContent, error)`：解析已读取的窗体设计流
+- `(*DB).ReadFormStreams(formName string) (*FormStreams, error)`：读取窗体原始设计流（Lv/LvProp/LvExtra）
+- `(*DB).ReadFormAccessObjectChunks(formName string) ([]AccessObjectChunk, error)`：读取窗体相关的 AccessObjects 分片（按相关度排序）
+- `(*DB).ReadFormDesignChunks(formName string) ([]FormDesignChunk, error)`：筛选窗体设计强相关分片（DocClass/VB_Name/NameMap 命中）
+- `(*DB).ReadAndParseFormLayout(formName string) (*FormLayout, error)`：优先用 TypeInfo 返回准确控件目录，旧分片解析作为兜底
+- `ParseFormPropsFromLvProp(lvProp []byte) (*ParsedFormProps, error)`：结构化解析 LvProp（含 NameMap 控件名）
+- `ParseFormLayoutFromDesignChunks(formName string, chunks []FormDesignChunk, parsed *ParsedFormProps) *FormLayout`：分片级布局解析
+- `ParseFormLayoutFromStreams(streams *FormStreams) *FormLayout`：用 Go 对二进制流做启发式解析
+- `ControlTypeCodeToString(ctype int) string`：把 Access 控件类型代码转换为类型名
+
+## 说明
+
+- 为了简化跨平台构建，bundled 模式默认关闭 `iconv`。
+- 当前 `DB` 句柄按串行访问设计，不保证并发安全。
+- `Query` 不允许 `CONNECT` / `DISCONNECT` 语句。
+- Jet4 MDB 已支持 `RecordSource`、窗体 `Width`，以及控件 `Name/Type/Left/Top/Width/Height/Caption/ControlSource/Format/Tag/FontName/FontSize/StatusBarText/TextAlign/TabIndex` 等常用内容。
+- `TextAlignValue/BackColorValue/ForeColorValue` 保留 Access Interop 原生数值；`TextAlign/BackColor/ForeColor/BackGroundColor` 提供便于直接使用的文本值。`f_abia_master` 的 36 个 TextBox 和 35 个原生 Label 已分别通过 Windows 导出 JSON 的字段级对照。
+- `FormContent.Sections` 按 TypeInfo 中的分区标记组织真实控件；`FormContent.Controls` 仍保留包含分区标记的原始平面顺序，普通控件可通过 `Section` 判断归属。
+- `FormPropertyIDToName` 的常用属性编号按 Microsoft Office Access Interop 的 `DispId` 对齐；例如 `ControlSource=27`、`Format=38`、`InputMask=72`、`Tag=266`。
+- `HasGeometry=true` 表示控件块包含完整的四项 twips 几何标签；节、继承布局或省略默认值的少量控件会保持 `HasGeometry=false`，不会用猜测值填充。
