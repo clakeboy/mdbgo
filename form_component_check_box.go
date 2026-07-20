@@ -102,7 +102,10 @@ func parseJet4FormCheckBoxProperties(data []byte, controls []FormControlInfo) ma
 }
 
 func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, bool) {
-	result := jet4CheckBoxNumericProperties{Visible: true}
+	result := jet4CheckBoxNumericProperties{
+		Visible:  true,
+		Geometry: formControlGeometry{Height: 240},
+	}
 	if len(tail) < 12 {
 		return result, false
 	}
@@ -117,9 +120,9 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 	if recordPos < 0 {
 		return result, false
 	}
+	result.Locked = recordPos+3 < len(tail) && tail[recordPos+3] == 0x02
 
 	foundWidth := false
-	foundHeight := false
 	for pos := recordPos + 3; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -138,7 +141,6 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 				foundWidth = true
 			case 0x63:
 				result.Geometry.Height = value
-				foundHeight = true
 			case 0x69:
 				result.TabIndex = value
 				result.HasTabIndex = true
@@ -148,7 +150,7 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 			pos++
 		}
 	}
-	if !foundWidth || !foundHeight || result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
+	if !foundWidth || result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||
 		result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {
 		return result, false

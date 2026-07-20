@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-const defaultTestDB = "testdb/ABIQuery.mdb"
+const defaultTestDB = "testdb/mdbs/ABIQuery.mdb"
 const defaultFormExportJSON = "/Users/clake/Downloads/midb-01-31/f_midb_export.json"
 
 // testDBPath 返回测试数据库路径。
@@ -41,6 +41,9 @@ func requireDBFile(t *testing.T) string {
 
 func requireFormName(t *testing.T, db *DB) string {
 	t.Helper()
+	if formName := strings.TrimSpace(os.Getenv("MDBGO_TEST_FORM_NAME")); formName != "" {
+		return formName
+	}
 	forms, err := db.ExportForms()
 	if err != nil {
 		t.Fatalf("ExportForms failed: %v", err)
@@ -548,6 +551,14 @@ func TestReadFormContentFAbiaMaster(t *testing.T) {
 	if content.Width != 12540 {
 		t.Fatalf("Width=%d want=12540", content.Width)
 	}
+	if content.Height != 8640 || content.BackColorValue != 0x8000000F ||
+		content.BackColor != "#0f0000" || content.BackGroundColor != "#0f0000" {
+		t.Fatalf("form visual properties: Height=%d BackColor=%q BackColorValue=0x%08X BackGroundColor=%q",
+			content.Height, content.BackColor, content.BackColorValue, content.BackGroundColor)
+	}
+	if content.Caption != "Query MAWB Manifest / ABI Status" {
+		t.Fatalf("Caption=%q", content.Caption)
+	}
 	if len(content.Controls) != 93 {
 		t.Fatalf("controls=%d want=93", len(content.Controls))
 	}
@@ -703,6 +714,7 @@ type windowsExportedControl struct {
 	Tag             string
 	Source          string
 	Format          string
+	Underline       bool
 	TextAlign       string
 	TabIndex        int
 	Width           int
@@ -748,6 +760,7 @@ type windowsRawExportedControl struct {
 	TabIndex        int
 	SearchColumn    int
 	Columns         string
+	NoWarp          bool
 	Controls        []windowsRawExportedControl
 	Tabs            []windowsRawExportedControl
 }
@@ -989,6 +1002,46 @@ func TestReadFormContentFAbiaMasterQueryComboBox(t *testing.T) {
 	}
 }
 
+func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		tail      []byte
+		locked    bool
+		underline bool
+	}{
+		{
+			name: "locked",
+			tail: []byte{
+				0xFF, 0x0B, 0x00, 0x6D, 0x00, 0x02, 0x37, 0x5D, 0x3B, 0x02,
+				0x60, 0x54, 0x06, 0x62, 0x48, 0x03, 0x63, 0x20, 0x01,
+				0x69, 0x09, 0x00, 0x6B, 0x01, 0x00, 0xDC, 0x22,
+			},
+			locked: true,
+		},
+		{
+			name: "underlined",
+			tail: []byte{
+				0xFD, 0x6D, 0x00, 0x0A, 0x37, 0x57, 0x3B, 0x01,
+				0x62, 0x54, 0x06, 0x63, 0x20, 0x01, 0x69, 0x09, 0x00,
+				0x6B, 0x08, 0x00, 0x9F, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x10,
+			},
+			underline: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseJet4TextBoxNumericTail(tt.tail)
+			if !ok {
+				t.Fatal("parseJet4TextBoxNumericTail did not recognize TextBox record")
+			}
+			if got.Locked != tt.locked || got.Underline != tt.underline {
+				t.Fatalf("TextBox flags locked=%v underline=%v want locked=%v underline=%v",
+					got.Locked, got.Underline, tt.locked, tt.underline)
+			}
+		})
+	}
+}
+
 func TestReadFormContentFAbiaMasterQueryComboBoxAgainstRawWindowsExport(t *testing.T) {
 	fixturePath := filepath.Join("testdb", "t_abia_master_query_org.json")
 	fixtureData, err := os.ReadFile(fixturePath)
@@ -1079,10 +1132,49 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 	if !ok {
 		t.Fatal("parseJet4ComboBoxNumericTail did not recognize ComboBox record")
 	}
-	if got.ColumnCount != 0 || got.ListRows != 12 || got.ListWidth != 2160 || got.BoundColumn != 2 ||
+	if got.ColumnCount != 2 || got.ListRows != 12 || got.ListWidth != 2160 || got.BoundColumn != 2 ||
 		got.TabIndex != 2 || !got.HasTabIndex ||
 		got.Geometry != (formControlGeometry{Left: 1500, Top: 1080, Width: 1680, Height: 300}) {
 		t.Fatalf("ComboBox numeric properties=%+v", got)
+	}
+
+	omittedTopTail := []byte{
+		0xFD, 0x6F, 0x00, 0x04, 0x0A, 0x32, 0x00, 0x39, 0x02,
+		0x60, 0x02, 0x00,
+		0x61, 0x0C, 0x00,
+		0x62, 0x80, 0x16,
+		0x63, 0x9C, 0x09,
+		0x65, 0x90, 0x06,
+		0x66, 0x2C, 0x01,
+		0x6E, 0x02, 0x00,
+		0xDC, 0x0E,
+	}
+	got, ok = parseJet4ComboBoxNumericTail(omittedTopTail)
+	if !ok || got.BoundColumn != 1 || !got.Locked || got.TextAlign != 2 ||
+		got.Geometry != (formControlGeometry{Left: 2460, Width: 1680, Height: 300}) {
+		t.Fatalf("omitted-top ComboBox numeric properties=%+v ok=%v", got, ok)
+	}
+
+	pageBoundaryTail := append([]byte{0xFF, 0x09, 0x00}, omittedTopTail[1:]...)
+	got, ok = parseJet4ComboBoxNumericTail(pageBoundaryTail)
+	if !ok || got.Geometry != (formControlGeometry{Left: 2460, Width: 1680, Height: 300}) {
+		t.Fatalf("page-boundary ComboBox numeric properties=%+v ok=%v", got, ok)
+	}
+
+	defaultFieldsTail := []byte{
+		0xFD, 0x6F, 0x00, 0x35, 0x57, 0x39, 0x02, 0x44, 0x03,
+		0x61, 0x0C, 0x00,
+		0x62, 0xA0, 0x05,
+		0x65, 0x84, 0x03,
+		0x66, 0x1D, 0x01,
+		0x6C, 0x09, 0x00,
+		0xDC, 0x16,
+	}
+	got, ok = parseJet4ComboBoxNumericTail(defaultFieldsTail)
+	if !ok || got.ColumnCount != 0 || got.BoundColumn != 1 || got.TextAlign != 2 ||
+		got.TabIndex != 0 || got.HasTabIndex ||
+		got.Geometry != (formControlGeometry{Width: 900, Height: 285}) {
+		t.Fatalf("default-fields ComboBox numeric properties=%+v ok=%v", got, ok)
 	}
 }
 
@@ -1191,6 +1283,7 @@ func TestParseJet4ButtonNumericTail(t *testing.T) {
 				TabIndex: 1, HasTabIndex: true, BackStyle: 1,
 				BackColor: "#ffffff", BackColorValue: 16777215,
 				Geometry: formControlGeometry{Left: 11040, Top: 570, Width: 1200, Height: 360}, HasGeometry: true,
+				HasExplicitHeight: true,
 			},
 		},
 		{
@@ -1202,6 +1295,41 @@ func TestParseJet4ButtonNumericTail(t *testing.T) {
 				TabIndex: 12, HasTabIndex: true, BackStyle: 1,
 				BackColor: "#ffffff", BackColorValue: 16777215,
 				Geometry: formControlGeometry{Left: 765, Top: 30, Width: 720, Height: 360}, HasGeometry: true,
+			},
+		},
+		{
+			name: "newer layout default height",
+			tail: []byte{0xFD, 0x68, 0x00, 0x31, 0xF7,
+				0x60, 0xE4, 0x0C, 0x61, 0xEC, 0x04, 0x62, 0x48, 0x03,
+				0x69, 0x06, 0x00, 0x9D, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x10},
+			want: jet4ButtonNumericProperties{
+				TabIndex: 6, HasTabIndex: true, BackStyle: 1,
+				BackColor: "#ffffff", BackColorValue: 16777215,
+				Geometry: formControlGeometry{Left: 3300, Top: 1260, Width: 840, Height: 420}, HasGeometry: true,
+			},
+		},
+		{
+			name: "default top",
+			tail: []byte{0xFD, 0x68, 0x00, 0x31, 0x5D,
+				0x60, 0xA8, 0x2A, 0x62, 0xA4, 0x01, 0x63, 0x68, 0x01,
+				0x69, 0x02, 0x00, 0x9D, 0x00, 0x00, 0x80, 0x00, 0xDC, 0x12},
+			want: jet4ButtonNumericProperties{
+				TabIndex: 2, HasTabIndex: true, BackStyle: 1,
+				BackColor: "#ffffff", BackColorValue: 16777215,
+				Geometry: formControlGeometry{Left: 10920, Width: 420, Height: 360}, HasGeometry: true,
+				HasExplicitHeight: true,
+			},
+		},
+		{
+			name: "default width",
+			tail: []byte{0xFD, 0x68, 0x00, 0x31, 0xF7,
+				0x60, 0x60, 0x27, 0x61, 0xFC, 0x03, 0x63, 0x58, 0x02,
+				0x69, 0x08, 0x00, 0x9D, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x26},
+			want: jet4ButtonNumericProperties{
+				TabIndex: 8, HasTabIndex: true, BackStyle: 1,
+				BackColor: "#ffffff", BackColorValue: 16777215,
+				Geometry: formControlGeometry{Left: 10080, Top: 1020, Width: 1440, Height: 600}, HasGeometry: true,
+				HasExplicitHeight: true,
 			},
 		},
 	}
@@ -1295,6 +1423,26 @@ func TestParseJet4CheckBoxNumericTail(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("CheckBox numeric properties=%+v want=%+v", got, want)
+	}
+
+	defaultHeightTail := []byte{
+		0xFD, 0x6A, 0x00, 0x02, 0x32, 0xDF,
+		0x60, 0x54, 0x15,
+		0x61, 0xA8, 0x0C,
+		0x62, 0xF0, 0x00,
+		0x69, 0x14, 0x00,
+		0xDC, 0x1A,
+	}
+	got, ok = parseJet4CheckBoxNumericTail(defaultHeightTail)
+	if !ok {
+		t.Fatal("parseJet4CheckBoxNumericTail did not recognize default-height record")
+	}
+	want = jet4CheckBoxNumericProperties{
+		TabIndex: 20, HasTabIndex: true, Locked: true, Visible: true,
+		Geometry: formControlGeometry{Left: 5460, Top: 3240, Width: 240, Height: 240}, HasGeometry: true,
+	}
+	if got != want {
+		t.Fatalf("default-height CheckBox numeric properties=%+v want=%+v", got, want)
 	}
 }
 
@@ -1532,9 +1680,10 @@ func TestParseJet4SubFormNumericTail(t *testing.T) {
 			},
 		},
 		{
-			name: "standard record with tab index",
+			name: "standard record with can shrink and tab index",
 			tail: []byte{
 				0xFD, 0x70, 0x00,
+				0x04,
 				0x33, 0xF7,
 				0x60, 0xF0, 0x00,
 				0x61, 0x8A, 0x09,
@@ -1544,7 +1693,7 @@ func TestParseJet4SubFormNumericTail(t *testing.T) {
 				0xDC, 0x3A,
 			},
 			want: jet4SubFormNumericProperties{
-				TabIndex: 5, HasTabIndex: true, Visible: true,
+				TabIndex: 5, HasTabIndex: true, CanShrink: true, Visible: true,
 				Geometry:    formControlGeometry{Left: 240, Top: 2442, Width: 12000, Height: 1653},
 				HasGeometry: true,
 			},
@@ -1636,9 +1785,11 @@ func TestReadFormContentSubFormsAgainstRawWindowsExport(t *testing.T) {
 				actual.Left, actual.Top, actual.Width, actual.Height,
 				expected.Left, expected.Top, expected.Width, expected.Height)
 		}
-		if actual.Locked != expected.Locked || !actual.Visible || !actual.HasGeometry {
-			t.Errorf("SubForm %q locked=%v/%v visible=%v geometry_complete=%v", expected.Name,
-				actual.Locked, expected.Locked, actual.Visible, actual.HasGeometry)
+		if actual.Locked != expected.Locked || actual.CanShrink != expected.NoWarp ||
+			!actual.Visible || !actual.HasGeometry {
+			t.Errorf("SubForm %q locked=%v/%v can_shrink=%v/%v visible=%v geometry_complete=%v", expected.Name,
+				actual.Locked, expected.Locked, actual.CanShrink, expected.NoWarp,
+				actual.Visible, actual.HasGeometry)
 		}
 	}
 
@@ -1783,6 +1934,22 @@ func TestParseJet4TabControlNumericTail(t *testing.T) {
 				Geometry: formControlGeometry{Top: 360, Width: 9600, Height: 7275}, HasGeometry: true,
 			},
 		},
+		{
+			name: "default font properties",
+			tail: []byte{
+				0xFD, 0x7B, 0x00,
+				0x31, 0x57,
+				0x61, 0x68, 0x01,
+				0x62, 0xF0, 0x2D,
+				0x63, 0x20, 0x1C,
+				0x66, 0x07, 0x00,
+				0xDC, 0x14,
+			},
+			want: jet4TabControlNumericProperties{
+				FontSize: 8, FontWeight: 400, Visible: true,
+				Geometry: formControlGeometry{Top: 360, Width: 11760, Height: 7200}, HasGeometry: true,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1886,17 +2053,46 @@ func TestParseJet4TabPageNumericTail(t *testing.T) {
 				0xDC, 0x18,
 			},
 		},
-	}
-	want := jet4TabPageNumericProperties{
-		Visible:     true,
-		Geometry:    formControlGeometry{Left: 98, Top: 390, Width: 12345, Height: 8153},
-		HasGeometry: true,
+		{
+			name: "legacy mask two",
+			tail: []byte{
+				0xFF, 0x02, 0x00, 0x7C, 0x00,
+				0x31, 0xD7,
+				0x60, 0x87, 0x00,
+				0x61, 0xFD, 0x02,
+				0x62, 0xE2, 0x2C,
+				0x63, 0x04, 0x1A,
+				0xDC, 0x08,
+			},
+		},
+		{
+			name: "legacy mask six",
+			tail: []byte{
+				0xFF, 0x06, 0x00, 0x7C, 0x00,
+				0x31, 0xD7,
+				0x60, 0x87, 0x00,
+				0x61, 0x39, 0x03,
+				0x62, 0x5E, 0x38,
+				0x63, 0xE0, 0x1F,
+				0xDC, 0x14,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := parseJet4TabPageNumericTail(tt.tail)
 			if !ok {
 				t.Fatal("parseJet4TabPageNumericTail did not recognize TabPage record")
+			}
+			want := jet4TabPageNumericProperties{
+				Visible:     true,
+				Geometry:    formControlGeometry{Left: 98, Top: 390, Width: 12345, Height: 8153},
+				HasGeometry: true,
+			}
+			if tt.name == "legacy mask two" {
+				want.Geometry = formControlGeometry{Left: 98, Top: 720, Width: 11565, Height: 6743}
+			} else if tt.name == "legacy mask six" {
+				want.Geometry = formControlGeometry{Left: 98, Top: 780, Width: 14505, Height: 8243}
 			}
 			if got != want {
 				t.Fatalf("TabPage numeric properties=%+v want=%+v", got, want)
@@ -2172,6 +2368,232 @@ func TestFormPropertyIDToNameAgainstInterop(t *testing.T) {
 		if got := FormPropertyIDToName(id); got != want {
 			t.Errorf("FormPropertyIDToName(%d)=%q want=%q", id, got, want)
 		}
+	}
+}
+
+func TestJet4ControlNumericTailWithoutGUID(t *testing.T) {
+	name := "hs_code"
+	block := append([]byte(nil), encodeUTF16LE(name)...)
+	block = append(block, 0xEA, 0x0E)
+	block = append(block, encodeUTF16LE("Verdana")...)
+	want := []byte{0xFE, 0x64, 0x00, 0x35, 0xD7}
+	block = append(block, want...)
+	if got := jet4ControlNumericTailForType(block, name, "ComboBox"); !bytes.Equal(got, want) {
+		t.Fatalf("numeric tail=% x want=% x", got, want)
+	}
+}
+
+func TestOrderedFormControlOffsetsSkipsPrefixNameDictionary(t *testing.T) {
+	appendTaggedName := func(dst []byte, name string) []byte {
+		encoded := encodeUTF16LE(name)
+		dst = append(dst, encoded...)
+		dst = append(dst, 0xDD, byte(len(encoded)))
+		return append(dst, encoded...)
+	}
+
+	data := appendTaggedName(nil, "field_id") // 窗体前部字段字典中的同名项。
+	data = append(data, make([]byte, 80)...)
+	sectionOffset := len(data)
+	data = append(data, encodeUTF16LE("Detail0")...)
+	data = append(data, make([]byte, 24)...)
+	controlOffset := len(data)
+	data = appendTaggedName(data, "field_id") // 真正的控件设计块。
+
+	controls := []FormControlInfo{
+		{Name: "field_id", Type: "TextBox", TypeCode: 0x126D},
+		{Name: "Detail0", Type: "Detail", TypeCode: 0x1898},
+	}
+	offsets := orderedFormControlOffsets(data, controls)
+	if offsets[0] != controlOffset || offsets[1] != sectionOffset {
+		t.Fatalf("control offsets=%v want=[%d %d]", offsets, controlOffset, sectionOffset)
+	}
+}
+
+func TestOrderedFormControlOffsetsSkipsLabelCaptionMatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		falseTag   byte
+		falseValue string
+	}{
+		{name: "label font size", falseTag: 0xE4, falseValue: "128"},
+		{name: "label font name e8", falseTag: 0xE8, falseValue: "Verdana"},
+		{name: "label font name de", falseTag: 0xDE, falseValue: "Verdana"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append([]byte(nil), encodeUTF16LE("Detail0")...)
+			data = append(data, make([]byte, 24)...)
+			data = append(data, encodeUTF16LE("MID")...)
+			falseValue := encodeUTF16LE(tt.falseValue)
+			data = append(data, tt.falseTag, byte(len(falseValue)))
+			data = append(data, falseValue...)
+			data = append(data, make([]byte, 24)...)
+			controlOffset := len(data)
+			data = append(data, encodeUTF16LE("mid")...)
+			source := encodeUTF16LE("mid")
+			data = append(data, 0xDD, byte(len(source)))
+			data = append(data, source...)
+
+			controls := []FormControlInfo{
+				{Name: "Detail0", Type: "Detail", TypeCode: 0x1898},
+				{Name: "mid", Type: "TextBox", TypeCode: 0x126D},
+			}
+			offsets := orderedFormControlOffsets(data, controls)
+			if offsets[1] != controlOffset {
+				t.Fatalf("TextBox mid offset=%d want=%d", offsets[1], controlOffset)
+			}
+		})
+	}
+}
+
+func TestOrderedFormControlOffsetsSkipsLongerControlNamePrefix(t *testing.T) {
+	appendTaggedName := func(dst []byte, name string) []byte {
+		dst = append(dst, encodeUTF16LE(name)...)
+		encoded := encodeUTF16LE(name)
+		dst = append(dst, 0xDD, byte(len(encoded)))
+		return append(dst, encoded...)
+	}
+
+	data := appendTaggedName(nil, "entry_seq_code1")
+	data = append(data, make([]byte, 24)...)
+	wantOffset := len(data)
+	data = appendTaggedName(data, "entry_seq_code")
+	offsets := orderedFormControlOffsets(data, []FormControlInfo{
+		{Name: "entry_seq_code", Type: "TextBox", TypeCode: 0x126D},
+	})
+	if offsets[0] != wantOffset {
+		t.Fatalf("entry_seq_code offset=%d want=%d", offsets[0], wantOffset)
+	}
+}
+
+func TestOrderedFormControlOffsetsPrefersCompleteTextBoxBlock(t *testing.T) {
+	name := "entry_seq_code"
+	data := append([]byte(nil), encodeUTF16LE(name)...)
+	tag := encodeUTF16LE("sel_status_desc")
+	data = append(data, 0xF4, byte(len(tag)))
+	data = append(data, tag...)
+	data = append(data, make([]byte, 24)...)
+	wantOffset := len(data)
+	data = append(data, encodeUTF16LE(name)...)
+	source := encodeUTF16LE(name)
+	data = append(data, 0xDD, byte(len(source)))
+	data = append(data, source...)
+	data = append(data, 0xF4, byte(len(tag)))
+	data = append(data, tag...)
+
+	offsets := orderedFormControlOffsets(data, []FormControlInfo{
+		{Name: name, Type: "TextBox", TypeCode: 0x126D},
+	})
+	if offsets[0] != wantOffset {
+		t.Fatalf("entry_seq_code offset=%d want complete block at %d", offsets[0], wantOffset)
+	}
+}
+
+func TestOrderedFormControlOffsetsRejectsLabelCaptionForComboBox(t *testing.T) {
+	data := append([]byte(nil), encodeUTF16LE("mid")...)
+	font := encodeUTF16LE("Verdana")
+	data = append(data, 0xDE, byte(len(font)))
+	data = append(data, font...)
+	data = append(data, make([]byte, 24)...)
+	wantOffset := len(data)
+	data = append(data, encodeUTF16LE("mid")...)
+	source := encodeUTF16LE("mid")
+	data = append(data, 0xDD, byte(len(source)))
+	data = append(data, source...)
+	rowSourceType := encodeUTF16LE("Table/Query")
+	data = append(data, 0xDE, byte(len(rowSourceType)))
+	data = append(data, rowSourceType...)
+	rowSource := encodeUTF16LE("q_mid")
+	data = append(data, 0xDF, byte(len(rowSource)))
+	data = append(data, rowSource...)
+
+	offsets := orderedFormControlOffsets(data, []FormControlInfo{
+		{Name: "mid", Type: "ComboBox", TypeCode: 0x136F},
+	})
+	if offsets[0] != wantOffset {
+		t.Fatalf("mid offset=%d want complete ComboBox block at %d", offsets[0], wantOffset)
+	}
+}
+
+func TestOrderedFormControlOffsetsRejectsFontOnlyTabPageCandidate(t *testing.T) {
+	data := append([]byte(nil), encodeUTF16LE("Other")...)
+	font := encodeUTF16LE("Verdana")
+	data = append(data, 0xDE, byte(len(font)))
+	data = append(data, font...)
+	data = append(data, make([]byte, 24)...)
+	wantOffset := len(data)
+	data = append(data, encodeUTF16LE("Other")...)
+	caption := encodeUTF16LE("DMS Filing")
+	data = append(data, 0xE8, byte(len(caption)))
+	data = append(data, caption...)
+
+	offsets := orderedFormControlOffsets(data, []FormControlInfo{
+		{Name: "Other", Type: "TabPage", TypeCode: 0x217C},
+	})
+	if offsets[0] != wantOffset {
+		t.Fatalf("Other offset=%d want complete TabPage block at %d", offsets[0], wantOffset)
+	}
+}
+
+func TestNormalizeControlSourcePreservesFullNativeIdentifier(t *testing.T) {
+	for _, value := range []string{"loading_port_code", "discharge_port_code", "TrackingNo"} {
+		got, ok := normalizeControlSource(value, strings.TrimSuffix(strings.ToLower(value), "_code"))
+		if !ok || got != value {
+			t.Fatalf("normalizeControlSource(%q)=%q,%v", value, got, ok)
+		}
+	}
+}
+
+func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
+	tail := []byte{
+		0xFD, 0x64, 0x00, 0x01, 0x35, 0x5F, 0x37, 0x02,
+		0x60, 0x5C, 0x1C,
+		0x62, 0xC0, 0x03,
+		0x63, 0x20, 0x01,
+		0x65, 0x90, 0x01,
+		0x9C, 0x33, 0x33, 0x33, 0x00,
+		0x9D, 0xFF, 0xFF, 0xFF, 0x00,
+		0xDC, 0x10,
+	}
+	got, ok := parseJet4LabelNumericTail(tail)
+	if !ok || got.BackColorValue != 0x00333333 || got.ForeColorValue != 0x00FFFFFF {
+		t.Fatalf("Label native colors=%+v ok=%v", got, ok)
+	}
+
+	defaultBackColorTail := []byte{
+		0xFE, 0x64, 0x00, 0x35, 0xFF, 0x37, 0x01,
+		0x60, 0xD4, 0x1C,
+		0x61, 0x28, 0x05,
+		0x62, 0x0C, 0x03,
+		0x63, 0x2C, 0x01,
+		0x64, 0x09, 0x00,
+		0x9E, 0x00, 0x00, 0x00, 0x00,
+		0xDC, 0x12,
+	}
+	got, ok = parseJet4LabelNumericTail(defaultBackColorTail)
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0 {
+		t.Fatalf("Label default native colors=%+v ok=%v", got, ok)
+	}
+
+	systemForeColorTail := append([]byte(nil), defaultBackColorTail...)
+	copy(systemForeColorTail[len(systemForeColorTail)-6:len(systemForeColorTail)-2], []byte{0x12, 0x00, 0x00, 0x80})
+	got, ok = parseJet4LabelNumericTail(systemForeColorTail)
+	if !ok || got.BackColorValue != 0x00FFFFFF || got.ForeColorValue != 0x80000012 {
+		t.Fatalf("Label system ForeColor defaults=%+v ok=%v", got, ok)
+	}
+
+	systemDefaultsTail := []byte{
+		0xFE, 0x64, 0x00, 0x35, 0xFF, 0x37, 0x01,
+		0x60, 0xD4, 0x1C,
+		0x61, 0x28, 0x05,
+		0x62, 0x0C, 0x03,
+		0x63, 0x2C, 0x01,
+		0x64, 0x09, 0x00,
+		0xDC, 0x12,
+	}
+	got, ok = parseJet4LabelNumericTail(systemDefaultsTail)
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
+		t.Fatalf("Label omitted native colors=%+v ok=%v", got, ok)
 	}
 }
 

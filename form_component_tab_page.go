@@ -78,10 +78,22 @@ func parseJet4FormTabPageProperties(data []byte, controls []FormControlInfo) map
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
 	numericRecords := make([]jet4TabPageNumericProperties, 0, len(tabPages))
+	legacyFrame := false
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
+		if mask, ok := jet4TabPageBoundaryMask(tail); ok {
+			legacyFrame = jet4TabPageUsesLegacyFrame(mask)
+		}
 		props, ok := parseJet4TabPageNumericTail(tail)
 		if ok {
+			// 一个 TabControl 只有第一页带 FF 边界掩码，后续 Page 使用 FD/FE
+			// 记录并继承第一页的边框尺寸。掩码 02 的外框上下各多 15 twips。
+			if legacyFrame {
+				if _, explicit := jet4TabPageBoundaryMask(tail); !explicit {
+					props.Geometry.Top -= 15
+					props.Geometry.Height += 15
+				}
+			}
 			numericRecords = append(numericRecords, props)
 		}
 	}
@@ -91,6 +103,19 @@ func parseJet4FormTabPageProperties(data []byte, controls []FormControlInfo) map
 		result[strings.ToLower(tabPages[i].name)] = props
 	}
 	return result
+}
+
+func jet4TabPageBoundaryMask(tail []byte) (byte, bool) {
+	if len(tail) < 5 || tail[0] != 0xFF || tail[3] != 0x7C || tail[4] != 0x00 {
+		return 0, false
+	}
+	return tail[1], true
+}
+
+func jet4TabPageUsesLegacyFrame(mask byte) bool {
+	// 已观察到 02/06 使用旧版 45/83 twips 外框，03 使用新版 30/68。
+	// 最低位是这两种布局之间稳定的区别，其余位保存其他 Page 标志。
+	return mask&0x01 == 0
 }
 
 func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, bool) {
@@ -159,13 +184,18 @@ func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, boo
 	}
 
 	// Access COM 的 Page.Left/Top/Width/Height 是包含页边框的外框；Jet4 记录保存内框。
-	// 对仓库中的 Access 2010 原生样本，外框稳定地向左扩 37、向上扩 30，
-	// 宽度增加 75、高度增加 68 twips。该值同时覆盖不同大小和位置的 TabControl。
+	// FF 掩码 02 的旧版布局比掩码 03 的顶部边框多 15 twips。
+	topExpansion := 30
+	heightExpansion := 68
+	if len(tail) > 1 && tail[0] == 0xFF && jet4TabPageUsesLegacyFrame(tail[1]) {
+		topExpansion = 45
+		heightExpansion = 83
+	}
 	result.Geometry = formControlGeometry{
 		Left:   internal.Left - 37,
-		Top:    internal.Top - 30,
+		Top:    internal.Top - topExpansion,
 		Width:  internal.Width + 75,
-		Height: internal.Height + 68,
+		Height: internal.Height + heightExpansion,
 	}
 	if result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||

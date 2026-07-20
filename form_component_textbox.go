@@ -31,6 +31,8 @@ type jet4FormNumericProperties struct {
 	TextAlign      byte
 	TabIndex       int
 	HasTabIndex    bool
+	Locked         bool
+	Underline      bool
 	BackStyle      byte
 	BackColor      string
 	BackColorValue uint32
@@ -42,6 +44,8 @@ type jet4FormNumericProperties struct {
 
 func (props jet4FormNumericProperties) formProperties() []FormProperty {
 	return []FormProperty{
+		{ID: 0x0038, Name: FormPropertyIDToName(0x0038), ValueType: "Bool", Value: strconv.FormatBool(props.Locked)},
+		{ID: 0x0024, Name: FormPropertyIDToName(0x0024), ValueType: "Bool", Value: strconv.FormatBool(props.Underline)},
 		{ID: 0x001D, Name: FormPropertyIDToName(0x001D), ValueType: "Byte", Value: strconv.Itoa(int(props.BackStyle))},
 		{ID: 0x0088, Name: FormPropertyIDToName(0x0088), ValueType: "Byte", Value: strconv.Itoa(int(props.TextAlign))},
 		{ID: 0x0105, Name: FormPropertyIDToName(0x0105), ValueType: "Short", Value: strconv.Itoa(props.TabIndex)},
@@ -51,9 +55,9 @@ func (props jet4FormNumericProperties) formProperties() []FormProperty {
 }
 
 // parseJet4FormNumericProperties 解析 TextBox 的紧凑数值属性。
-// Jet4 Blob 中文本目录和紧凑数值记录是两套顺序：文本块尾部附带的数值记录
-// 不一定属于相邻 TypeInfo 项。因此先用 TextBox 特有的 BackColor/ForeColor 组合
-// 筛选物理记录，再按物理顺序与 TextBox 文本块配对。
+// Jet4 Blob 中文本目录和紧凑数值记录是两套顺序：0x006D 数值记录保存在
+// 前一个物理控件块尾部，属于它后面的第一个 TextBox。按物理邻接绑定可跳过
+// 没有布局记录的隐藏 TextBox，避免其后全部属性错位。
 func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map[string]jet4FormNumericProperties {
 	result := make(map[string]jet4FormNumericProperties)
 	if len(data) < 8 || len(controls) == 0 || le16(data) > 0x0014 {
@@ -96,20 +100,38 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 		})
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
-	numericRecords := make([]jet4FormNumericProperties, 0, len(textBoxes))
+	numericByTextBox := make(map[int]jet4FormNumericProperties, len(textBoxes))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
 		props, ok := parseJet4TextBoxNumericTail(tail)
-		if ok {
-			numericRecords = append(numericRecords, props)
+		if !ok {
+			continue
+		}
+		target := sort.Search(len(textBoxes), func(i int) bool {
+			return textBoxes[i].offset > block.offset
+		})
+		if target < len(textBoxes) {
+			if _, exists := numericByTextBox[target]; !exists {
+				numericByTextBox[target] = props
+			}
 		}
 	}
 
+	hasTabPages := false
+	for _, control := range controls {
+		if control.Type == "TabPage" {
+			hasTabPages = true
+			break
+		}
+	}
 	previousTabIndex := -1
 	previousOffset := -1
-	for i := 0; i < len(textBoxes) && i < len(numericRecords); i++ {
-		props := numericRecords[i]
-		if previousTabIndex >= 0 {
+	for i := 0; i < len(textBoxes); i++ {
+		props, ok := numericByTextBox[i]
+		if !ok {
+			continue
+		}
+		if hasTabPages && previousTabIndex >= 0 {
 			if !props.HasTabIndex {
 				if hasJet4ControlTypeBetween(controls, offsets, previousOffset, textBoxes[i].offset, "TabPage") {
 					props.TabIndex = 0
@@ -118,7 +140,6 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 				}
 			} else if props.TabIndex > previousTabIndex+1 &&
 				!hasJet4FocusableControlBetween(controls, offsets, previousOffset, textBoxes[i].offset) {
-				// Access 会压缩已删除/不可聚焦控件留下的 TabIndex 空洞。
 				props.TabIndex = previousTabIndex + 1
 			}
 		}
@@ -152,30 +173,50 @@ func hasJet4FocusableControlBetween(controls []FormControlInfo, offsets []int, s
 }
 
 func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) {
-	var result jet4FormNumericProperties
-	if len(tail) < 10 {
+	result := jet4FormNumericProperties{
+		BackStyle:      1,
+		BackColor:      accessColorHex(0x00FFFFFF),
+		BackColorValue: 0x00FFFFFF,
+		// Access TextBox 未显式保存 ForeColor 时使用系统 WindowText。
+		// 显式的普通 RGB 颜色仍会由 0x9F 覆盖。
+		ForeColor:      accessColorHex(0x80000008),
+		ForeColorValue: 0x80000008,
+	}
+	if len(tail) < 12 {
 		return result, false
 	}
 
-	colorPos := -1
-	for pos := 0; pos+10 <= len(tail); pos++ {
-		if tail[pos] == 0x9C && tail[pos+5] == 0x9F {
-			colorPos = pos
+	// TextBox 的紧凑记录类型为 0x006D。记录有时直接以 FD 6D 00
+	// 开始，有时嵌在 FF <len> 00 6D 00 之后。
+	recordPos := -1
+	for pos := 0; pos+2 <= len(tail) && pos < 8; pos++ {
+		if tail[pos] == 0x6D && tail[pos+1] == 0x00 {
+			recordPos = pos + 2
 			break
 		}
 	}
-	if colorPos < 0 {
+	if recordPos < 0 {
 		return result, false
 	}
 
-	layoutPos := colorPos
-	for pos := 0; pos+2 < colorPos; pos++ {
+	// Locked 是记录前缀里的独立布尔标志 0x02，不是带值的 tagged 项。
+	// 首条记录可能先带一个 0x01 前缀，再保存 0x02。
+	result.Locked = tail[recordPos] == 0x02 ||
+		(recordPos+1 < len(tail) && tail[recordPos] == 0x01 && tail[recordPos+1] == 0x02)
+	result.Underline = tail[recordPos] == 0x0A ||
+		(recordPos+1 < len(tail) && tail[recordPos] == 0x02 && tail[recordPos+1] == 0x0A)
+
+	layoutPos := -1
+	for pos := recordPos; pos+2 < len(tail); pos++ {
 		if tail[pos] >= 0x60 && tail[pos] <= 0x63 {
 			layoutPos = pos
 			break
 		}
 	}
-	result.BackStyle = 1 // Access TextBox 默认背景样式为 Normal。
+	if layoutPos < 0 {
+		return result, false
+	}
+
 	for pos := 0; pos+1 < layoutPos; pos++ {
 		switch tail[pos] {
 		case 0x3B:
@@ -193,30 +234,48 @@ func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) 
 	result.Geometry.Width = 1440
 	result.Geometry.Height = 288
 	result.HasGeometry = true
-	for pos := layoutPos; pos+2 < colorPos; {
+	for pos := layoutPos; pos+2 < len(tail); {
 		tag := tail[pos]
-		value := int(le16(tail[pos+1:]))
 		switch tag {
-		case 0x60:
-			result.Geometry.Left = value
-		case 0x61:
-			result.Geometry.Top = value
-		case 0x62:
-			result.Geometry.Width = value
-		case 0x63:
-			result.Geometry.Height = value
-		case 0x6B:
-			result.TabIndex = value
-			result.HasTabIndex = true
+		case 0x60, 0x61, 0x62, 0x63, 0x69, 0x6B:
+			value := int(le16(tail[pos+1:]))
+			switch tag {
+			case 0x60:
+				result.Geometry.Left = value
+			case 0x61:
+				result.Geometry.Top = value
+			case 0x62:
+				result.Geometry.Width = value
+			case 0x63:
+				result.Geometry.Height = value
+			case 0x6B:
+				result.TabIndex = value
+				result.HasTabIndex = true
+			}
+			pos += 3
+		case 0x9C, 0x9F:
+			if pos+5 > len(tail) {
+				return result, false
+			}
+			value := le32(tail[pos+1:])
+			if tag == 0x9C {
+				result.BackColorValue = value
+				result.BackColor = accessColorHex(value)
+			} else {
+				result.ForeColorValue = value
+				result.ForeColor = accessColorHex(value)
+			}
+			pos += 5
+		case 0xDC:
+			pos = len(tail)
 		default:
 			pos++
-			continue
 		}
-		pos += 3
 	}
-	result.BackColorValue = le32(tail[colorPos+1:])
-	result.ForeColorValue = le32(tail[colorPos+6:])
-	result.BackColor = accessColorHex(result.BackColorValue)
-	result.ForeColor = accessColorHex(result.ForeColorValue)
+	if result.Geometry.Width <= 0 || result.Geometry.Height <= 0 ||
+		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
+		result.Geometry.Width > 32767 || result.Geometry.Height > 32767 {
+		return result, false
+	}
 	return result, true
 }

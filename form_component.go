@@ -76,6 +76,7 @@ type FormControlContent struct {
 	Type             string
 	TypeCode         uint16
 	Index            uint32
+	BlobOffset       int
 	Section          string
 	IsSection        bool
 	Left             int
@@ -97,6 +98,7 @@ type FormControlContent struct {
 	FontName         string
 	FontSize         int
 	FontWeight       int
+	Underline        bool
 	StatusBarText    string
 	RowSourceType    string
 	RowSource        string
@@ -106,6 +108,7 @@ type FormControlContent struct {
 	ListWidth        int
 	BoundColumn      int
 	Locked           bool
+	CanShrink        bool
 	Visible          bool
 	TextAlign        string
 	TextAlignValue   byte
@@ -542,6 +545,12 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 				}
 			}
 		}
+		for _, field := range prefixFields {
+			if field.Tag == 0xDD && strings.TrimSpace(field.Value) != "" {
+				formProps = mergeFormProperties(formProps, []FormProperty{newTextFormProperty(0x0011, field.Value)})
+				break
+			}
+		}
 	}
 
 	for i, control := range controls {
@@ -560,6 +569,10 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 			}
 		}
 		props = mergeFormProperties(props, parseJet4ComponentTextProperties(control, fields))
+		if control.Type == "Button" {
+			props = mergeFormProperties(props, parseJet4ButtonBinaryProperties(
+				control, jet4FormControlBlock(data, offsets, i)))
+		}
 		if len(props) > 0 {
 			result[strings.ToLower(control.Name)] = props
 		}
@@ -639,6 +652,11 @@ func jet4ControlNumericTailForType(block []byte, controlName, controlType string
 	}
 	for pos := len(nameBytes); pos+2 <= len(block); {
 		tag := block[pos]
+		if tag == 0xFD || tag == 0xFE || tag == 0xFF {
+			// 部分控件（例如 ComboBox）不保存对象 GUID，最后一个文本属性后
+			// 会直接跟下一个控件的紧凑数值记录。
+			return block[pos:]
+		}
 		byteLen := int(block[pos+1])
 		if byteLen == 16 && isJet4ControlGUIDTagForType(tag, controlType) && pos+18 <= len(block) {
 			return block[pos+18:]
@@ -851,13 +869,24 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 	// 因此先为每个控件独立寻找能通过长度标记文本校验的物理块，不能强制全局单调。
 	firstStructuredOffset := len(data)
 	for i, control := range controls {
+		nameBytes := encodeUTF16LE(control.Name)
+		bestOffset := -1
+		bestScore := 0
 		for _, off := range findUTF16LETokenOffsets(data, control.Name) {
-			if len(parseJet4TaggedTextFields(data[off:], control.Name)) > 0 {
-				offsets[i] = off
-				if off < firstStructuredOffset {
-					firstStructuredOffset = off
-				}
-				break
+			if !hasJet4ControlNameBoundary(data, off, len(nameBytes)) {
+				continue
+			}
+			fields := parseJet4TaggedTextFieldsForType(data[off:], control.Name, control.Type)
+			score := jet4TaggedTextFieldsControlTypeScore(control.Type, fields)
+			if score > bestScore {
+				bestOffset = off
+				bestScore = score
+			}
+		}
+		if bestOffset >= 0 {
+			offsets[i] = bestOffset
+			if bestOffset < firstStructuredOffset {
+				firstStructuredOffset = bestOffset
 			}
 		}
 	}
@@ -872,14 +901,153 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 		if offsets[i] >= 0 {
 			continue
 		}
+		nameBytes := encodeUTF16LE(control.Name)
 		for _, off := range findUTF16LETokenOffsets(data, control.Name) {
-			if off >= designStart {
+			if off >= designStart && hasJet4ControlNameBoundary(data, off, len(nameBytes)) {
 				offsets[i] = off
 				break
 			}
 		}
 	}
+
+	// 名称还可能出现在 Blob 前部的窗体属性/字段字典中。正常控件块不会位于
+	// 第一个 Section 物理标记之前；若初次命中落在该边界前，改取设计区内
+	// 能通过 tagged-text 校验的同名块。
+	firstSectionOffset := len(data)
+	for i, control := range controls {
+		if isFormSectionTypeCode(control.TypeCode) && offsets[i] >= 0 && offsets[i] < firstSectionOffset {
+			firstSectionOffset = offsets[i]
+		}
+	}
+	if firstSectionOffset < len(data) {
+		for i, control := range controls {
+			if isFormSectionTypeCode(control.TypeCode) || offsets[i] < 0 || offsets[i] >= firstSectionOffset {
+				continue
+			}
+			bestOffset := -1
+			bestScore := 0
+			for _, off := range findUTF16LETokenOffsets(data, control.Name) {
+				if off < firstSectionOffset ||
+					!hasJet4ControlNameBoundary(data, off, len(encodeUTF16LE(control.Name))) {
+					continue
+				}
+				fields := parseJet4TaggedTextFieldsForType(data[off:], control.Name, control.Type)
+				score := jet4TaggedTextFieldsControlTypeScore(control.Type, fields)
+				if score > bestScore {
+					bestOffset = off
+					bestScore = score
+				}
+			}
+			if bestOffset >= 0 {
+				offsets[i] = bestOffset
+			}
+		}
+	}
 	return offsets
+}
+
+func jet4TaggedTextFieldsMatchControlType(controlType string, fields []jet4TaggedTextField) bool {
+	return jet4TaggedTextFieldsControlTypeScore(controlType, fields) > 0
+}
+
+func jet4TaggedTextFieldsControlTypeScore(controlType string, fields []jet4TaggedTextField) int {
+	if len(fields) == 0 {
+		return 0
+	}
+	score := 0
+	for _, field := range fields {
+		switch controlType {
+		case "TextBox":
+			// TextBox 名称可能与 Label.Caption 相同。真正的 TextBox 块至少
+			// 包含 ControlSource、Format、StatusBarText、Tag 中的一项。
+			switch field.Tag {
+			case 0xDD:
+				score += 6
+			case 0xDF, 0xF4:
+				score += 3
+			case 0xDE:
+				if !isKnownFormFont(field.Value) {
+					score += 4
+				}
+			}
+		case "ComboBox":
+			// ComboBox 的短名称（例如 mid）经常出现在 Label.Caption 中。
+			// 仅有 DE=FontName 的候选不是 ComboBox 块。
+			switch field.Tag {
+			case 0xDD, 0xDF:
+				score += 6
+			case 0xDE:
+				if !isKnownFormFont(field.Value) {
+					score += 4
+				}
+			case 0xE0:
+				score += 5
+			case 0xEA:
+				score++
+			case 0xF5:
+				score += 3
+			}
+		case "TabPage":
+			// Page.Name 也可能出现在普通文本中；Caption/EventProcPrefix
+			// 才能确认真实 Page 块。
+			switch field.Tag {
+			case 0xE3, 0xE8:
+				score += 6
+			case 0xEA:
+				score++
+			}
+		case "SubForm":
+			switch field.Tag {
+			case 0xDD:
+				score += 6
+			case 0xDE, 0xDF, 0xE0, 0xE3:
+				score += 3
+			}
+		case "Label", "Button", "CheckBox", "OptionGroup", "OptionButton", "TabControl":
+			// 这些类型仍允许只有字体/Caption 的紧凑块，但优先选择带有
+			// 首项文本属性的完整候选，避免命中另一个控件的文本片段。
+			if field.Tag == 0xDD {
+				score += 4
+			} else {
+				score++
+			}
+		default:
+			score++
+		}
+	}
+	return score
+}
+
+func jet4ControlNameAt(data []byte, offset int, fallback string) string {
+	nameBytes := encodeUTF16LE(fallback)
+	if offset < 0 || len(nameBytes) == 0 || offset+len(nameBytes) > len(data) {
+		return fallback
+	}
+	name, ok := decodeJet4UTF16Text(data[offset : offset+len(nameBytes)])
+	if !ok || !strings.EqualFold(name, fallback) {
+		return fallback
+	}
+	return name
+}
+
+func hasJet4ControlNameBoundary(data []byte, offset, byteLen int) bool {
+	if byteLen <= 0 || offset < 0 || offset+byteLen > len(data) {
+		return false
+	}
+	// 控件名可能紧跟任意二进制记录，不能把前一个 uint16 普遍解释成
+	// Unicode 标识符。排除已知的名称片段误命中，例如在 lbl_house_no
+	// 中命中 house_no，或在 entry_seq_code1 中命中 entry_seq_code。
+	if offset >= 2 && le16(data[offset-2:]) == '_' {
+		return false
+	}
+	if offset+byteLen+2 <= len(data) {
+		next := rune(le16(data[offset+byteLen:]))
+		if next == '_' || next >= '0' && next <= '9' ||
+			next >= 'A' && next <= 'Z' || next >= 'a' && next <= 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeRecordSource(value string) (string, bool) {
@@ -926,9 +1094,6 @@ func normalizeControlSource(value, controlName string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" || isKnownFormFont(value) {
 		return "", false
-	}
-	if strings.HasPrefix(strings.ToLower(value), strings.ToLower(controlName)) {
-		return controlName, true
 	}
 	if strings.HasPrefix(value, "=") || strings.HasPrefix(value, "[") {
 		return value, true

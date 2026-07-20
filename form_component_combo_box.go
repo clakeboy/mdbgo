@@ -131,59 +131,95 @@ func parseJet4ComboBoxNumericTail(tail []byte) (jet4ComboBoxNumericProperties, b
 		BoundColumn: 1,
 		Visible:     true,
 	}
-	if len(tail) < 21 {
+	if len(tail) < 12 {
 		return result, false
 	}
 
-	layoutPos := -1
-	for pos := 0; pos+21 <= len(tail); pos++ {
-		matched := true
-		for tag := byte(0x60); tag <= 0x66; tag++ {
-			if tail[pos+int(tag-0x60)*3] != tag {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			layoutPos = pos
+	typePos := -1
+	for pos := 0; pos+2 <= len(tail) && pos < 12; pos++ {
+		if tail[pos] == 0x6F && tail[pos+1] == 0x00 {
+			typePos = pos
 			break
 		}
 	}
-	if layoutPos < 0 {
+	if typePos < 0 {
 		return result, false
 	}
-
-	values := make([]int, 7)
-	for i := range values {
-		values[i] = int(le16(tail[layoutPos+i*3+1:]))
+	payloadPos := typePos + 2
+	for pos := payloadPos; pos < len(tail) && tail[pos] != 0x60; pos++ {
+		if tail[pos] == 0x04 {
+			result.Locked = true
+		}
+		if tail[pos] == 0x39 && pos+1 < len(tail) && tail[pos+1] <= 4 {
+			result.TextAlign = tail[pos+1]
+		}
 	}
-	if values[0] <= 0 || values[0] > 255 || values[1] <= 0 || values[1] > 255 ||
-		values[3] > 32767 || values[4] > 32767 ||
-		values[5] <= 0 || values[5] > 32767 || values[6] <= 0 || values[6] > 32767 {
-		return result, false
-	}
 
-	result.BoundColumn = values[0]
-	result.ListRows = values[1]
-	result.ListWidth = values[2]
-	result.Geometry = formControlGeometry{Left: values[3], Top: values[4], Width: values[5], Height: values[6]}
-	result.HasGeometry = true
-
-	for pos := layoutPos + 21; pos < len(tail); {
-		switch tail[pos] {
-		case 0x6E:
+	foundWidth := false
+	foundHeight := false
+	for pos := payloadPos; pos < len(tail); {
+		tag := tail[pos]
+		switch tag {
+		case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x6E:
 			if pos+3 > len(tail) {
 				return result, false
 			}
-			result.TabIndex = int(le16(tail[pos+1:]))
-			result.HasTabIndex = true
+			value := int(le16(tail[pos+1:]))
+			switch tag {
+			case 0x60:
+				result.ColumnCount = value
+			case 0x61:
+				result.ListRows = value
+			case 0x62:
+				result.ListWidth = value
+			case 0x63:
+				result.Geometry.Left = value
+			case 0x64:
+				result.Geometry.Top = value
+			case 0x65:
+				result.Geometry.Width = value
+				foundWidth = true
+			case 0x66:
+				result.Geometry.Height = value
+				foundHeight = true
+			case 0x6E:
+				result.TabIndex = value
+				result.HasTabIndex = true
+			}
 			pos += 3
+		case 0x9C:
+			// ComboBox 在 0x9C 中以零基值保存 BoundColumn；Access COM
+			// 返回一基值。记录前缀的 0x01 是其他标志，不能当成 BoundColumn。
+			if pos+5 > len(tail) {
+				return result, false
+			}
+			result.BoundColumn = int(le32(tail[pos+1:])) + 1
+			pos += 5
+		case 0x9D, 0xA0:
+			// BackColor/ForeColor，不属于当前导出模型，但需跨过完整值。
+			if pos+5 > len(tail) {
+				return result, false
+			}
+			pos += 5
+		case 0xBC:
+			// 后续是 ColumnHeads/列格式文本及对象 GUID。
+			pos = len(tail)
+		case 0xDC:
+			pos = len(tail)
 		default:
 			pos++
 		}
 	}
-	if !result.HasTabIndex || result.BoundColumn <= 0 {
+	// Jet4 会省略值为默认值的字段。ColumnCount 可由 ColumnWidths 推导，
+	// TabIndex 缺省时为 0，Left/Top 缺省时同样为 0。
+	if !foundWidth || !foundHeight ||
+		result.ColumnCount < 0 || result.ColumnCount > 255 ||
+		result.ListRows <= 0 || result.ListRows > 255 ||
+		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
+		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||
+		result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {
 		return result, false
 	}
+	result.HasGeometry = true
 	return result, true
 }

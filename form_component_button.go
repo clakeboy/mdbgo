@@ -30,13 +30,14 @@ func parseJet4ButtonTextProperties(control FormControlInfo, fields []jet4TaggedT
 }
 
 type jet4ButtonNumericProperties struct {
-	TabIndex       int
-	HasTabIndex    bool
-	BackStyle      byte
-	BackColor      string
-	BackColorValue uint32
-	Geometry       formControlGeometry
-	HasGeometry    bool
+	TabIndex          int
+	HasTabIndex       bool
+	BackStyle         byte
+	BackColor         string
+	BackColorValue    uint32
+	Geometry          formControlGeometry
+	HasGeometry       bool
+	HasExplicitHeight bool
 }
 
 func (props jet4ButtonNumericProperties) formProperties() []FormProperty {
@@ -96,16 +97,24 @@ func parseJet4FormButtonProperties(data []byte, controls []FormControlInfo) map[
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
-	numericRecords := make([]jet4ButtonNumericProperties, 0, len(buttons))
+	numericByButton := make(map[int]jet4ButtonNumericProperties, len(buttons))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
 		props, ok := parseJet4ButtonNumericTail(tail)
-		if ok {
-			numericRecords = append(numericRecords, props)
+		if !ok {
+			continue
+		}
+		target := sort.Search(len(buttons), func(i int) bool {
+			return buttons[i].offset > block.offset
+		})
+		if target < len(buttons) {
+			if _, exists := numericByButton[target]; !exists {
+				numericByButton[target] = props
+			}
 		}
 	}
-	for i := 0; i < len(buttons) && i < len(numericRecords); i++ {
-		result[strings.ToLower(buttons[i].name)] = numericRecords[i]
+	for i, props := range numericByButton {
+		result[strings.ToLower(buttons[i].name)] = props
 	}
 	return result
 }
@@ -116,7 +125,7 @@ func parseJet4ButtonNumericTail(tail []byte) (jet4ButtonNumericProperties, bool)
 		BackStyle:      1,
 		BackColorValue: defaultButtonBackColor,
 		BackColor:      accessColorHex(defaultButtonBackColor),
-		Geometry:       formControlGeometry{Height: 360},
+		Geometry:       formControlGeometry{Width: 1440, Height: 360},
 	}
 	if len(tail) < 14 {
 		return result, false
@@ -132,46 +141,89 @@ func parseJet4ButtonNumericTail(tail []byte) (jet4ButtonNumericProperties, bool)
 	if recordPos < 0 {
 		return result, false
 	}
+	// 0x31 后的布局掩码及前置 0x0A 标志决定省略 0x63 时所采用的
+	// Access 原生默认高度。F7/FF 或 0x0A 使用 420，其余使用 360 twips。
+	hasTallDefaultFlag := false
+	for pos := recordPos + 3; pos+1 < len(tail) && pos < recordPos+12; pos++ {
+		if tail[pos] == 0x0A {
+			hasTallDefaultFlag = true
+		}
+		if tail[pos] != 0x31 {
+			continue
+		}
+		if hasTallDefaultFlag || tail[pos+1]&0x20 != 0 {
+			result.Geometry.Height = 420
+		}
+		break
+	}
 
-	layoutPos := -1
-	for pos := recordPos + 3; pos+9 <= len(tail); pos++ {
-		if tail[pos] == 0x60 && tail[pos+3] == 0x61 && tail[pos+6] == 0x62 {
-			layoutPos = pos
-			break
+	for pos := recordPos + 3; pos < len(tail); {
+		tag := tail[pos]
+		switch tag {
+		case 0x60, 0x61, 0x62, 0x63, 0x69:
+			if pos+3 > len(tail) {
+				return result, false
+			}
+			value := int(le16(tail[pos+1:]))
+			switch tag {
+			case 0x60:
+				result.Geometry.Left = value
+			case 0x61:
+				result.Geometry.Top = value
+			case 0x62:
+				result.Geometry.Width = value
+			case 0x63:
+				result.Geometry.Height = value
+				result.HasExplicitHeight = true
+			case 0x69:
+				result.TabIndex = value
+				result.HasTabIndex = true
+			}
+			pos += 3
+		case 0xDC:
+			pos = len(tail)
+		default:
+			pos++
 		}
 	}
-	if layoutPos < 0 {
-		return result, false
-	}
-
-	result.Geometry.Left = int(le16(tail[layoutPos+1:]))
-	result.Geometry.Top = int(le16(tail[layoutPos+4:]))
-	result.Geometry.Width = int(le16(tail[layoutPos+7:]))
 	if result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 {
 		return result, false
-	}
-	pos := layoutPos + 9
-	if pos+3 <= len(tail) && tail[pos] == 0x63 {
-		result.Geometry.Height = int(le16(tail[pos+1:]))
-		pos += 3
 	}
 	if result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {
 		return result, false
 	}
 	result.HasGeometry = true
-
-	for pos < len(tail) {
-		if tail[pos] == 0x69 {
-			if pos+3 > len(tail) {
-				return result, false
-			}
-			result.TabIndex = int(le16(tail[pos+1:]))
-			result.HasTabIndex = true
-			pos += 3
-			continue
-		}
-		pos++
-	}
 	return result, true
+}
+
+func parseJet4ButtonBinaryProperties(control FormControlInfo, block []byte) []FormProperty {
+	nameBytes := encodeUTF16LE(control.Name)
+	if len(nameBytes) == 0 || !hasUTF16LEPrefixFoldASCII(block, nameBytes) {
+		return nil
+	}
+
+	var result []FormProperty
+	for pos := len(nameBytes); pos+2 <= len(block); {
+		tag := block[pos]
+		if tag == 0xE3 {
+			result = mergeFormProperties(result, []FormProperty{newTextFormProperty(0x0007, "(位图)")})
+			break
+		}
+		byteLen := int(block[pos+1])
+		if tag < 0xC0 || byteLen < 2 || byteLen%2 != 0 || pos+2+byteLen > len(block) {
+			break
+		}
+		if _, ok := decodeJet4UTF16Text(block[pos+2 : pos+2+byteLen]); !ok {
+			break
+		}
+		pos += 2 + byteLen
+	}
+
+	for _, field := range scanJet4TaggedTextFields(block) {
+		if field.Tag == 0xF1 {
+			result = mergeFormProperties(result, []FormProperty{newTextFormProperty(0x013D, field.Value)})
+		}
+	}
+	return result
 }

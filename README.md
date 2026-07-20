@@ -89,7 +89,7 @@ func main() {
 - `(*DB).ReadAccessObjectContainer() (*AccessObjectContainer, error)`：重组 `MSysAccessObjects.Data` 中的内部 OLE Compound 容器
 - `(*DB).ReadAccessObjectEntries() ([]AccessObjectEntry, error)`：读取内部 OLE 的目录与数据流
 - `(*DB).ReadFormObjectStreams(formName string) (*FormObjectStreams, error)`：读取指定窗体的 `Blob/TypeInfo/PropData/BlobDelta`
-- `(*DB).ReadFormContent(formName string) (*FormContent, error)`：读取单个窗体的 RecordSource、窗体宽度、`FormHeader/Detail/FormFooter` 分区、控件名、准确类型、twips 几何和常用文本属性；TextBox 额外直接输出 `Format/Tag/FontName/StatusBarText/TabIndex`，Label 直接输出 `Caption/Tag/FontName/FontSize/TextAlign`
+- `(*DB).ReadFormContent(formName string) (*FormContent, error)`：读取单个窗体的 Caption、RecordSource、窗体宽度、`FormHeader/Detail/FormFooter` 分区、控件名、准确类型、twips 几何和常用文本属性；TextBox 额外直接输出 `Format/Tag/FontName/StatusBarText/TabIndex`，Label 直接输出 `Caption/Tag/FontName/FontSize/TextAlign`
 - `(*DB).ExportFormContents() ([]FormContent, error)`：一次重组 OLE 后批量导出全部窗体内容
 - `ParseFormTypeInfo(data []byte) ([]FormControlInfo, error)`：解析控件名、内部类型代码和索引
 - `ParseFormContent(streams *FormObjectStreams) (*FormContent, error)`：解析已读取的窗体设计流
@@ -101,6 +101,22 @@ func main() {
 - `ParseFormLayoutFromDesignChunks(formName string, chunks []FormDesignChunk, parsed *ParsedFormProps) *FormLayout`：分片级布局解析
 - `ParseFormLayoutFromStreams(streams *FormStreams) *FormLayout`：用 Go 对二进制流做启发式解析
 - `ControlTypeCodeToString(ctype int) string`：把 Access 控件类型代码转换为类型名
+
+## 测试导出 Access 原生结构 JSON
+
+`TestExportFormAsAccessJSON` 可以指定任意窗体，按 `testdb/t_abia_master_org.json` 的字段命名和 `TabControl/TabPage/SubForm` 层级输出未做像素或颜色转换的原生数值：
+
+```bash
+MDBGO_EXPORT_FORM_NAME=f_abia_master \
+go test -run TestExportFormAsAccessJSON -v -count=1
+
+MDBGO_TEST_DB=testdb/mdbs/dms.mdb \
+MDBGO_EXPORT_FORM_NAME=f_oem_hbl_query \
+MDBGO_EXPORT_FORM_OUTPUT=testdb/f_oem_hbl_query_mdbgo.json \
+go test -run TestExportFormAsAccessJSON -v -count=1
+```
+
+可同时使用 `MDBGO_TEST_DB=/path/to/database.mdb` 指定其它 MDB 文件。未设置 `MDBGO_EXPORT_FORM_OUTPUT` 时 JSON 输出到测试日志。Windows COM `GetHashCode()` 是运行时值，并不存在于 MDB 持久数据中，因此该测试不会输出 `Hash`。
 
 ## 说明
 

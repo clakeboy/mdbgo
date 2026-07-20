@@ -94,7 +94,7 @@ func parseJet4FormTabControlProperties(data []byte, controls []FormControlInfo) 
 }
 
 func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericProperties, bool) {
-	result := jet4TabControlNumericProperties{Visible: true}
+	result := jet4TabControlNumericProperties{FontSize: 8, FontWeight: 400, Visible: true}
 	if len(tail) < 12 {
 		return result, false
 	}
@@ -120,8 +120,6 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 
 	foundWidth := false
 	foundHeight := false
-	foundFontSize := false
-	foundFontWeight := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -143,10 +141,8 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 				foundHeight = true
 			case 0x64:
 				result.FontSize = value
-				foundFontSize = true
 			case 0x65:
 				result.FontWeight = value
-				foundFontWeight = true
 			}
 			pos += 3
 		case 0xDC:
@@ -155,7 +151,7 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 			pos++
 		}
 	}
-	if !foundWidth || !foundHeight || !foundFontSize || !foundFontWeight ||
+	if !foundWidth || !foundHeight ||
 		result.FontSize <= 0 || result.FontSize > 255 || result.FontWeight < 0 || result.FontWeight > 1000 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||

@@ -49,12 +49,17 @@ type FormInfo struct {
 
 // FormContent 是从 Access 内部 Forms 存储解析出的窗体内容。
 type FormContent struct {
-	FormName     string
-	StorageID    int
-	Width        int
-	RecordSource string
-	Properties   []FormProperty
-	Sections     []FormSectionContent
+	FormName        string
+	StorageID       int
+	Width           int
+	Height          int
+	Caption         string
+	RecordSource    string
+	BackColor       string
+	BackColorValue  uint32
+	BackGroundColor string
+	Properties      []FormProperty
+	Sections        []FormSectionContent
 	// Controls 保留 TypeInfo 原始顺序的平面列表，以兼容已有调用；
 	// 分区标记可通过 IsSection 区分，普通控件通过 Section 标明所属分区。
 	Controls []FormControlContent
@@ -241,6 +246,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse TypeInfo for %s: %w", streams.FormName, err)
 	}
+	controlOffsets := orderedFormControlOffsets(streams.Blob, controls)
 	formProps, controlGroups := parseFormBlob(streams.Blob)
 	jet4FormProps, jet4ControlProps := parseJet4FormTextProperties(streams.Blob, controls)
 	jet4NumericProps := parseJet4FormNumericProperties(streams.Blob, controls)
@@ -267,11 +273,20 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	}
 	usedGroups := make([]bool, len(controlGroups))
 	for i, control := range controls {
+		controlName := control.Name
+		if control.Type == "TextBox" && i < len(controlOffsets) {
+			controlName = jet4ControlNameAt(streams.Blob, controlOffsets[i], control.Name)
+		}
 		parsed := FormControlContent{
-			Name:     control.Name,
-			Type:     control.Type,
-			TypeCode: control.TypeCode,
-			Index:    control.Index,
+			Name:       controlName,
+			Type:       control.Type,
+			TypeCode:   control.TypeCode,
+			Index:      control.Index,
+			BlobOffset: -1,
+			Visible:    true,
+		}
+		if i < len(controlOffsets) {
+			parsed.BlobOffset = controlOffsets[i]
 		}
 		groupIndex := findFormPropertyGroupByName(controlGroups, control.Name)
 		if groupIndex < 0 && i < len(controlGroups) {
@@ -284,6 +299,8 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		parsed.Properties = mergeFormProperties(parsed.Properties, jet4ControlProps[strings.ToLower(control.Name)])
 		if numeric, ok := jet4NumericProps[strings.ToLower(control.Name)]; ok {
 			parsed.Properties = mergeFormProperties(parsed.Properties, numeric.formProperties())
+			parsed.Locked = numeric.Locked
+			parsed.Underline = numeric.Underline
 			parsed.TextAlign = accessTextAlignName(numeric.TextAlign)
 			parsed.TextAlignValue = numeric.TextAlign
 			parsed.TabIndex = numeric.TabIndex
@@ -359,7 +376,10 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.BackColor = button.BackColor
 			parsed.BackColorValue = button.BackColorValue
 			parsed.BackGroundColor = button.BackColor
-			parsed.Picture = "(无)"
+			parsed.Picture = formPropertyText(parsed.Properties, 0x0007)
+			if parsed.Picture == "" {
+				parsed.Picture = "(无)"
+			}
 			if button.HasGeometry {
 				parsed.Left = button.Geometry.Left
 				parsed.Top = button.Geometry.Top
@@ -461,6 +481,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.Properties = mergeFormProperties(parsed.Properties, subForm.formProperties())
 			parsed.TabIndex = subForm.TabIndex
 			parsed.Locked = subForm.Locked
+			parsed.CanShrink = subForm.CanShrink
 			parsed.Visible = subForm.Visible
 			if subForm.HasGeometry {
 				parsed.Left = subForm.Geometry.Left
@@ -548,23 +569,50 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		content.Controls = append(content.Controls, FormControlContent{
 			Name:          name,
 			Type:          "Unknown",
+			BlobOffset:    -1,
 			Caption:       formPropertyText(group, 0x0011),
 			ControlSource: formPropertyText(group, 0x001B),
 			Properties:    group,
 		})
 	}
 	content.RecordSource = formPropertyText(content.Properties, 0x009C)
+	content.Caption = formPropertyText(content.Properties, 0x0011)
 	content.Sections = assignFormControlSections(content.Controls)
+	for _, section := range content.Sections {
+		if section.Type != "Detail" {
+			continue
+		}
+		// AccessExport 的 Form.Height 与 Form.BackGroundColor 均来自主体 Detail Section。
+		content.Height = section.Height
+		content.BackColor = section.BackColor
+		content.BackColorValue = section.BackColorValue
+		content.BackGroundColor = section.BackGroundColor
+		break
+	}
 	return content, nil
 }
 
-// assignFormControlSections 根据 TypeInfo 中的分区标记给控件分组。
-// Access 按“分区标记，随后是该分区控件”的顺序保存目录项。
+// assignFormControlSections 根据 Blob 中的分区标记给控件分组。
+// TypeInfo 允许把后创建的控件追加到目录末尾，即使其实际位于 FormFooter 之前；
+// Blob 的物理顺序才稳定保存“分区标记，随后是该分区控件”的结构。
 func assignFormControlSections(controls []FormControlContent) []FormSectionContent {
 	sections := make([]FormSectionContent, 0, 3)
 	currentSection := -1
-
+	indices := make([]int, len(controls))
+	allOffsetsKnown := true
 	for i := range controls {
+		indices[i] = i
+		if controls[i].BlobOffset < 0 {
+			allOffsetsKnown = false
+		}
+	}
+	if allOffsetsKnown {
+		sort.SliceStable(indices, func(i, j int) bool {
+			return controls[indices[i]].BlobOffset < controls[indices[j]].BlobOffset
+		})
+	}
+
+	for _, i := range indices {
 		control := &controls[i]
 		if isFormSectionTypeCode(control.TypeCode) {
 			control.Section = control.Type

@@ -91,11 +91,12 @@ func parseJet4FormRectangleProperties(data []byte, controls []FormControlInfo) m
 
 func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties, bool) {
 	result := jet4RectangleNumericProperties{
-		BorderStyle: 1,
-		BorderWidth: 1,
-		Visible:     true,
-		BackColor:   accessColorHex(0),
-		BorderColor: accessColorHex(0),
+		BorderStyle:    1,
+		BorderWidth:    1,
+		Visible:        true,
+		BackColor:      accessColorHex(0x00FFFFFF),
+		BackColorValue: 0x00FFFFFF,
+		BorderColor:    accessColorHex(0),
 	}
 	if len(tail) < 12 {
 		return result, false

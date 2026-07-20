@@ -35,6 +35,7 @@ type jet4SubFormNumericProperties struct {
 	TabIndex    int
 	HasTabIndex bool
 	Locked      bool
+	CanShrink   bool
 	Visible     bool
 	Geometry    formControlGeometry
 	HasGeometry bool
@@ -43,6 +44,7 @@ type jet4SubFormNumericProperties struct {
 func (props jet4SubFormNumericProperties) formProperties() []FormProperty {
 	result := []FormProperty{
 		{ID: 0x0038, Name: FormPropertyIDToName(0x0038), ValueType: "Bool", Value: strconv.FormatBool(props.Locked)},
+		{ID: 0x0010, Name: FormPropertyIDToName(0x0010), ValueType: "Bool", Value: strconv.FormatBool(props.CanShrink)},
 		{ID: 0x0094, Name: FormPropertyIDToName(0x0094), ValueType: "Bool", Value: strconv.FormatBool(props.Visible)},
 	}
 	if props.HasTabIndex {
@@ -136,6 +138,7 @@ func parseJet4SubFormNumericTail(tail []byte) (jet4SubFormNumericProperties, boo
 	if payloadPos < 0 {
 		return result, false
 	}
+	result.CanShrink = tail[payloadPos] == 0x04
 
 	foundWidth := false
 	foundHeight := false
