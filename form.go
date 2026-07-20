@@ -304,6 +304,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.TextAlign = accessTextAlignName(numeric.TextAlign)
 			parsed.TextAlignValue = numeric.TextAlign
 			parsed.TabIndex = numeric.TabIndex
+			parsed.ScrollBars = numeric.ScrollBars
 			parsed.BackStyle = int(numeric.BackStyle)
 			parsed.BackColor = numeric.BackColor
 			parsed.BackColorValue = numeric.BackColorValue
@@ -356,6 +357,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.ListRows = combo.ListRows
 			parsed.ListWidth = combo.ListWidth
 			parsed.BoundColumn = combo.BoundColumn
+			parsed.BackStyle = int(combo.BackStyle)
 			parsed.TextAlign = accessTextAlignName(combo.TextAlign)
 			parsed.TextAlignValue = combo.TextAlign
 			parsed.TabIndex = combo.TabIndex

@@ -28,18 +28,21 @@ func parseJet4TextBoxTextProperties(control FormControlInfo, fields []jet4Tagged
 }
 
 type jet4FormNumericProperties struct {
-	TextAlign      byte
-	TabIndex       int
-	HasTabIndex    bool
-	Locked         bool
-	Underline      bool
-	BackStyle      byte
-	BackColor      string
-	BackColorValue uint32
-	ForeColor      string
-	ForeColorValue uint32
-	Geometry       formControlGeometry
-	HasGeometry    bool
+	TextAlign       byte
+	TabIndex        int
+	HasTabIndex     bool
+	ScrollBars      byte
+	Locked          bool
+	Underline       bool
+	BackStyle       byte
+	BackColor       string
+	BackColorValue  uint32
+	ForeColor       string
+	ForeColorValue  uint32
+	Geometry        formControlGeometry
+	HasGeometry     bool
+	hasForeColor    bool
+	usesRGBDefaults bool
 }
 
 func (props jet4FormNumericProperties) formProperties() []FormProperty {
@@ -49,6 +52,7 @@ func (props jet4FormNumericProperties) formProperties() []FormProperty {
 		{ID: 0x001D, Name: FormPropertyIDToName(0x001D), ValueType: "Byte", Value: strconv.Itoa(int(props.BackStyle))},
 		{ID: 0x0088, Name: FormPropertyIDToName(0x0088), ValueType: "Byte", Value: strconv.Itoa(int(props.TextAlign))},
 		{ID: 0x0105, Name: FormPropertyIDToName(0x0105), ValueType: "Short", Value: strconv.Itoa(props.TabIndex)},
+		{ID: 0x0098, Name: FormPropertyIDToName(0x0098), ValueType: "Byte", Value: strconv.Itoa(int(props.ScrollBars))},
 		{ID: 0x001C, Name: FormPropertyIDToName(0x001C), ValueType: "Color", Value: props.BackColor},
 		{ID: 0x00CC, Name: FormPropertyIDToName(0x00CC), ValueType: "Color", Value: props.ForeColor},
 	}
@@ -116,6 +120,7 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 			}
 		}
 	}
+	applyJet4TextBoxColorDefaults(numericByTextBox)
 
 	hasTabPages := false
 	for _, control := range controls {
@@ -148,6 +153,29 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 		previousOffset = textBoxes[i].offset
 	}
 	return result
+}
+
+// applyJet4TextBoxColorDefaults 还原窗体级 TextBox 模板省略的 ForeColor。
+// Datasheet 的 0x30 项或 RGB 模板的 0x35 标志只需在部分记录中出现，
+// 同一窗体里其余未显式写 0x9F 的 TextBox 也使用默认黑色。
+func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties) {
+	usesRGBDefaults := false
+	for _, props := range records {
+		if props.usesRGBDefaults {
+			usesRGBDefaults = true
+			break
+		}
+	}
+	if !usesRGBDefaults {
+		return
+	}
+	for index, props := range records {
+		if !props.hasForeColor {
+			props.ForeColorValue = 0
+			props.ForeColor = accessColorHex(props.ForeColorValue)
+			records[index] = props
+		}
+	}
 }
 
 func hasJet4ControlTypeBetween(controls []FormControlInfo, offsets []int, start, end int, controlType string) bool {
@@ -217,23 +245,45 @@ func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) 
 		return result, false
 	}
 
-	for pos := 0; pos+1 < layoutPos; pos++ {
-		switch tail[pos] {
+	usesRGBDefaultColors := false
+	for pos := recordPos; pos < layoutPos; {
+		// 紧凑前缀中的 0x30..0x5F 项均为 tag/value 两字节；布尔标志
+		// （如 Locked 的 0x02）为单字节。按项推进可避免把某个 value
+		// 恰好等于 0x32 时误认成 ScrollBars 标签。
+		if tail[pos] < 0x30 || pos+1 >= layoutPos {
+			pos++
+			continue
+		}
+		tag, value := tail[pos], tail[pos+1]
+		switch tag {
+		case 0x30:
+			// Datasheet 模板的默认文字色同样是 RGB 黑色。
+			usesRGBDefaultColors = true
+		case 0x32:
+			if value <= 3 {
+				result.ScrollBars = value
+			}
+		case 0x35:
+			// Jet4 的 RGB 控件模板把 ForeColor=0 作为默认值，因此不会再
+			// 写 0x9F；0x35 的最低位用于标记这套模板。
+			usesRGBDefaultColors = usesRGBDefaultColors || value&0x01 != 0
 		case 0x3B:
-			if tail[pos+1] <= 4 {
-				result.TextAlign = tail[pos+1]
+			if value <= 4 {
+				result.TextAlign = value
 			}
 		case 0x43:
-			if tail[pos+1] <= 1 {
-				result.BackStyle = tail[pos+1]
+			if value <= 1 {
+				result.BackStyle = value
 			}
 		}
+		pos += 2
 	}
 
 	// Access TextBox 省略与默认值相同的尺寸项。
 	result.Geometry.Width = 1440
 	result.Geometry.Height = 288
 	result.HasGeometry = true
+	foundForeColor := false
 	for pos := layoutPos; pos+2 < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -264,6 +314,7 @@ func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) 
 			} else {
 				result.ForeColorValue = value
 				result.ForeColor = accessColorHex(value)
+				foundForeColor = true
 			}
 			pos += 5
 		case 0xDC:
@@ -272,6 +323,12 @@ func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) 
 			pos++
 		}
 	}
+	if usesRGBDefaultColors && !foundForeColor {
+		result.ForeColorValue = 0
+		result.ForeColor = accessColorHex(0)
+	}
+	result.hasForeColor = foundForeColor
+	result.usesRGBDefaults = usesRGBDefaultColors
 	if result.Geometry.Width <= 0 || result.Geometry.Height <= 0 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width > 32767 || result.Geometry.Height > 32767 {

@@ -33,7 +33,8 @@ type accessRawJSONControl struct {
 	Top       int    `json:"Top"`
 	Left      int    `json:"Left"`
 
-	Locked *bool `json:"Locked,omitempty"`
+	Locked    *bool `json:"Locked,omitempty"`
+	BackStyle *int  `json:"BackStyle,omitempty"`
 
 	Text            *string `json:"Text,omitempty"`
 	BackGroundColor *int64  `json:"BackGroundColor,omitempty"`
@@ -106,6 +107,7 @@ func (control accessRawJSONControl) MarshalJSON() ([]byte, error) {
 	add("Top", control.Top)
 	add("Left", control.Left)
 	addPtr("Locked", control.Locked, control.Locked != nil)
+	addPtr("BackStyle", control.BackStyle, control.BackStyle != nil)
 
 	switch control.ClassType {
 	case "Label":
@@ -238,7 +240,7 @@ func TestAccessRawJSONFieldOrder(t *testing.T) {
 	}{
 		{
 			classType: "TabControl",
-			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "Tabs"},
+			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle", "Tabs"},
 		},
 		{
 			classType: "TabPage",
@@ -247,7 +249,7 @@ func TestAccessRawJSONFieldOrder(t *testing.T) {
 		{
 			classType: "TextBox",
 			want: []string{
-				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked",
+				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle",
 				"Tag", "Source", "TextAlign", "IsTextArea", "IsRichText", "IsReadOnly",
 				"IsVisible", "TabIndex", "Format", "Length", "Underline", "FrontColor", "BackGroundColor",
 			},
@@ -255,21 +257,21 @@ func TestAccessRawJSONFieldOrder(t *testing.T) {
 		{
 			classType: "Label",
 			want: []string{
-				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked",
+				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle",
 				"Text", "BackGroundColor", "FrontColor", "FontSize", "TextAlign", "Source", "Tag",
 			},
 		},
 		{
 			classType: "ComboBox",
 			want: []string{
-				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked",
+				"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle",
 				"TextAlign", "Source", "SourceField", "RowSource", "BoundField", "IsReadOnly",
 				"IsVisible", "TabIndex", "SearchColumn", "Columns",
 			},
 		},
 		{
 			classType: "Button",
-			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "Text", "Icon", "Color", "Tip", "Outline"},
+			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle", "Text", "Icon", "Color", "Tip", "Outline"},
 		},
 		{
 			classType: "CheckBox",
@@ -277,11 +279,11 @@ func TestAccessRawJSONFieldOrder(t *testing.T) {
 		},
 		{
 			classType: "Rectangle",
-			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackGroundColor", "LineWidth", "LineColor", "BackTransparent", "LineTransparent"},
+			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle", "BackGroundColor", "LineWidth", "LineColor", "BackTransparent", "LineTransparent"},
 		},
 		{
 			classType: "RadioGroup",
-			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "Source"},
+			want:      []string{"ClassType", "Width", "Height", "Name", "Top", "Left", "Locked", "BackStyle", "Source"},
 		},
 		{
 			classType: "Radio",
@@ -393,7 +395,7 @@ func TestAccessRawFormSectionsMatchesTestClass1Order(t *testing.T) {
 }
 
 func accessRawJSONControlForOrder(classType string) accessRawJSONControl {
-	return accessRawJSONControl{
+	control := accessRawJSONControl{
 		ClassType:       classType,
 		Width:           1,
 		Height:          2,
@@ -401,6 +403,7 @@ func accessRawJSONControlForOrder(classType string) accessRawJSONControl {
 		Top:             3,
 		Left:            4,
 		Locked:          jsonBool(true),
+		BackStyle:       jsonInt(22),
 		Text:            jsonString("text"),
 		BackGroundColor: jsonInt64(5),
 		FrontColor:      jsonInt64(6),
@@ -435,6 +438,12 @@ func accessRawJSONControlForOrder(classType string) accessRawJSONControl {
 		OrderBy:         jsonString("field_name"),
 		RowHeight:       jsonInt(21),
 	}
+	switch classType {
+	case "Label", "TextBox", "ComboBox", "Button", "Rectangle", "RadioGroup", "TabControl":
+	default:
+		control.BackStyle = nil
+	}
+	return control
 }
 
 func TestAccessRawJSONDoesNotEscapeHTMLCharacters(t *testing.T) {
@@ -653,6 +662,10 @@ func (builder *accessRawJSONBuilder) convertControl(control FormControlContent) 
 		Top:       control.Top,
 		Left:      control.Left,
 	}
+	switch control.Type {
+	case "Label", "TextBox", "ComboBox", "Button", "Rectangle", "OptionGroup", "TabControl":
+		result.BackStyle = jsonInt(control.BackStyle)
+	}
 
 	switch control.Type {
 	case "Label":
@@ -667,7 +680,9 @@ func (builder *accessRawJSONBuilder) convertControl(control FormControlContent) 
 		result.Tag = jsonString(control.Tag)
 		result.Source = jsonString(control.ControlSource)
 		result.TextAlign = jsonInt(int(control.TextAlignValue))
-		result.IsTextArea = jsonInt(0)
+		// AccessExport 的 IsTextArea 字段直接输出 TextBox.ScrollBars 的
+		// 原生枚举值（0=None、1=Horizontal、2=Vertical、3=Both）。
+		result.IsTextArea = jsonInt(int(control.ScrollBars))
 		result.IsRichText = jsonInt(0)
 		result.IsReadOnly = jsonBool(control.Locked)
 		result.IsVisible = jsonBool(control.Visible)
@@ -832,6 +847,7 @@ func TestBuildAccessJSONFAbiaMaster(t *testing.T) {
 	if err := json.Unmarshal(rawFixture, &expected); err != nil {
 		t.Fatalf("decode raw Access fixture failed: %v", err)
 	}
+	clearAccessRawJSONBackStyleForLegacyFixture(exported.Controls, expected.Controls)
 	if len(expected.Controls) == 0 || !reflect.DeepEqual(exported.Controls[0], expected.Controls[0]) {
 		// Access 根级 Controls 还会重复枚举部分 COM 子对象，语义树以首个 TabControl 为准；
 		// Hash 是 COM 包装对象的运行时值，解码到 accessRawJSONControl 时会自动忽略。
@@ -869,6 +885,11 @@ func TestBuildAccessJSONFAbiEntryLineReview(t *testing.T) {
 func TestBuildAccessJSONFOemHblQuery(t *testing.T) {
 	testBuildAccessJSONAgainstRawFixture(t,
 		"f_oem_hbl_query", filepath.Join("testdb", "f_oem_hbl_query_org.json"))
+}
+
+func TestBuildAccessJSONFOemHbl(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixture(t,
+		"f_oem_hbl", filepath.Join("testdb", "f_oem_hbl_org.json"))
 }
 
 func TestBuildAccessJSONFAbiEntry(t *testing.T) {
@@ -931,6 +952,7 @@ func testBuildAccessJSONAgainstRawFixture(t *testing.T, formName, fixturePath st
 	if err := json.Unmarshal(rawFixture, &expected); err != nil {
 		t.Fatalf("decode raw Access fixture failed: %v", err)
 	}
+	clearAccessRawJSONBackStyleForLegacyFixture(exported.Controls, expected.Controls)
 	if exported.Name != expected.Name || exported.Title != expected.Title ||
 		exported.Width != expected.Width || exported.View != expected.View ||
 		exported.Source != expected.Source || exported.Height != expected.Height ||
@@ -963,6 +985,35 @@ func testBuildAccessJSONAgainstRawFixture(t *testing.T, formName, fixturePath st
 	if !reflect.DeepEqual(exported.Controls, expectedSemanticControls) {
 		t.Fatal("mdbgo semantic control tree differs from raw Access export")
 	}
+}
+
+// clearAccessRawJSONBackStyleForLegacyFixture keeps older raw exports usable.
+// AccessExport only started emitting BackStyle after those fixtures were made;
+// a fixture that contains at least one BackStyle remains fully strict.
+func clearAccessRawJSONBackStyleForLegacyFixture(actual, expected []accessRawJSONControl) {
+	if accessRawJSONControlsHaveBackStyle(expected) {
+		return
+	}
+	var clear func([]accessRawJSONControl)
+	clear = func(controls []accessRawJSONControl) {
+		for i := range controls {
+			controls[i].BackStyle = nil
+			clear(controls[i].Tabs)
+			clear(controls[i].Controls)
+		}
+	}
+	clear(actual)
+}
+
+func accessRawJSONControlsHaveBackStyle(controls []accessRawJSONControl) bool {
+	for i := range controls {
+		if controls[i].BackStyle != nil ||
+			accessRawJSONControlsHaveBackStyle(controls[i].Tabs) ||
+			accessRawJSONControlsHaveBackStyle(controls[i].Controls) {
+			return true
+		}
+	}
+	return false
 }
 
 // testBuildAccessJSONPropertiesAgainstRawFixture verifies the persisted values

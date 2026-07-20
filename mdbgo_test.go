@@ -1004,10 +1004,12 @@ func TestReadFormContentFAbiaMasterQueryComboBox(t *testing.T) {
 
 func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 	tests := []struct {
-		name      string
-		tail      []byte
-		locked    bool
-		underline bool
+		name       string
+		tail       []byte
+		locked     bool
+		underline  bool
+		foreColor  uint32
+		scrollBars byte
 	}{
 		{
 			name: "locked",
@@ -1016,7 +1018,8 @@ func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 				0x60, 0x54, 0x06, 0x62, 0x48, 0x03, 0x63, 0x20, 0x01,
 				0x69, 0x09, 0x00, 0x6B, 0x01, 0x00, 0xDC, 0x22,
 			},
-			locked: true,
+			locked:    true,
+			foreColor: 0x80000008,
 		},
 		{
 			name: "underlined",
@@ -1026,6 +1029,35 @@ func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 				0x6B, 0x08, 0x00, 0x9F, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x10,
 			},
 			underline: true,
+			foreColor: 0x00FF0000,
+		},
+		{
+			name: "datasheet implicit black",
+			tail: []byte{
+				0xFD, 0x6D, 0x00, 0x30, 0x00, 0x37, 0x5D, 0x3B, 0x02,
+				0x60, 0x78, 0x3C, 0x62, 0xEC, 0x04, 0x63, 0x20, 0x01,
+				0x69, 0x09, 0x00, 0x6B, 0x01, 0x00, 0xDC, 0x1A,
+			},
+			foreColor: 0,
+		},
+		{
+			name: "vertical scroll bar",
+			tail: []byte{
+				0xFD, 0x6D, 0x00, 0x32, 0x02, 0x34, 0x00, 0x37, 0xD7, 0x3B, 0x01, 0x46, 0x03,
+				0x60, 0x54, 0x06, 0x61, 0x24, 0x09, 0x62, 0x04, 0x0B, 0x63, 0x94, 0x02, 0x6B, 0x01, 0x00,
+				0x9C, 0xFF, 0xFF, 0xFF, 0x00, 0x9F, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x18,
+			},
+			foreColor:  0,
+			scrollBars: 2,
+		},
+		{
+			name: "rgb template implicit black",
+			tail: []byte{
+				0xFD, 0x6D, 0x00, 0x02, 0x34, 0x00, 0x35, 0x01, 0x37, 0xDF, 0x3B, 0x03, 0x43, 0x00, 0x46, 0x03,
+				0x60, 0x98, 0x2B, 0x61, 0xD8, 0x09, 0x62, 0x64, 0x05, 0x63, 0x2C, 0x01, 0x6B, 0x02, 0x00, 0xDC, 0x1C,
+			},
+			locked:    true,
+			foreColor: 0,
 		},
 	}
 	for _, tt := range tests {
@@ -1037,6 +1069,12 @@ func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 			if got.Locked != tt.locked || got.Underline != tt.underline {
 				t.Fatalf("TextBox flags locked=%v underline=%v want locked=%v underline=%v",
 					got.Locked, got.Underline, tt.locked, tt.underline)
+			}
+			if got.ForeColorValue != tt.foreColor {
+				t.Fatalf("TextBox ForeColor=%#08x want=%#08x", got.ForeColorValue, tt.foreColor)
+			}
+			if got.ScrollBars != tt.scrollBars {
+				t.Fatalf("TextBox ScrollBars=%d want=%d", got.ScrollBars, tt.scrollBars)
 			}
 		})
 	}
@@ -1133,7 +1171,7 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		t.Fatal("parseJet4ComboBoxNumericTail did not recognize ComboBox record")
 	}
 	if got.ColumnCount != 2 || got.ListRows != 12 || got.ListWidth != 2160 || got.BoundColumn != 2 ||
-		got.TabIndex != 2 || !got.HasTabIndex ||
+		got.BackStyle != 1 || got.TabIndex != 2 || !got.HasTabIndex ||
 		got.Geometry != (formControlGeometry{Left: 1500, Top: 1080, Width: 1680, Height: 300}) {
 		t.Fatalf("ComboBox numeric properties=%+v", got)
 	}
@@ -2545,6 +2583,17 @@ func TestNormalizeControlSourcePreservesFullNativeIdentifier(t *testing.T) {
 }
 
 func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
+	datasheetTail := []byte{
+		0xFD, 0x64, 0x00, 0x32, 0x01, 0x33, 0x01, 0x35, 0x5D, 0x37, 0x02,
+		0x60, 0xEC, 0x04, 0x62, 0x08, 0x07, 0x63, 0x20, 0x01, 0x65, 0x90, 0x01,
+		0x9C, 0x33, 0x33, 0x33, 0x00, 0x9D, 0xFF, 0xFF, 0xFF, 0x00,
+		0x9E, 0xFF, 0xFF, 0xFF, 0x00, 0xDC, 0x18,
+	}
+	datasheet, ok := parseJet4LabelNumericTail(datasheetTail)
+	if !ok || datasheet.BackStyle != 1 {
+		t.Fatalf("Datasheet Label BackStyle=%d ok=%v", datasheet.BackStyle, ok)
+	}
+
 	tail := []byte{
 		0xFD, 0x64, 0x00, 0x01, 0x35, 0x5F, 0x37, 0x02,
 		0x60, 0x5C, 0x1C,
@@ -2556,7 +2605,7 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 		0xDC, 0x10,
 	}
 	got, ok := parseJet4LabelNumericTail(tail)
-	if !ok || got.BackColorValue != 0x00333333 || got.ForeColorValue != 0x00FFFFFF {
+	if !ok || got.BackStyle != 1 || got.BackColorValue != 0x00333333 || got.ForeColorValue != 0x00FFFFFF {
 		t.Fatalf("Label native colors=%+v ok=%v", got, ok)
 	}
 
@@ -2594,6 +2643,37 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 	got, ok = parseJet4LabelNumericTail(systemDefaultsTail)
 	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
 		t.Fatalf("Label omitted native colors=%+v ok=%v", got, ok)
+	}
+
+	backColorOnlyTail := []byte{
+		0xFE, 0x64, 0x00, 0x35, 0xDF, 0x37, 0x02,
+		0x60, 0xB0, 0x31,
+		0x61, 0x34, 0x08,
+		0x62, 0xA0, 0x05,
+		0x63, 0x2C, 0x01,
+		0x64, 0x09, 0x00,
+		0x9C, 0x0F, 0x00, 0x00, 0x80,
+		0xDC, 0x10,
+	}
+	got, ok = parseJet4LabelNumericTail(backColorOnlyTail)
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
+		t.Fatalf("Label BackColor-only native colors=%+v ok=%v", got, ok)
+	}
+
+	records := map[int]jet4LabelNumericProperties{
+		0: got,
+		1: func() jet4LabelNumericProperties {
+			value, parsed := parseJet4LabelNumericTail(systemDefaultsTail)
+			if !parsed {
+				t.Fatal("parse omitted Label color record failed")
+			}
+			return value
+		}(),
+	}
+	applyJet4LabelColorDefaults(records)
+	if records[0].BackColorValue != 0x8000000F || records[0].ForeColorValue != 0 ||
+		records[1].BackColorValue != 0x00FFFFFF || records[1].ForeColorValue != 0 {
+		t.Fatalf("Label form RGB defaults=%+v", records)
 	}
 }
 

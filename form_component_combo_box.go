@@ -34,6 +34,7 @@ type jet4ComboBoxNumericProperties struct {
 	ListRows    int
 	ListWidth   int
 	BoundColumn int
+	BackStyle   byte
 	TextAlign   byte
 	TabIndex    int
 	HasTabIndex bool
@@ -46,6 +47,7 @@ type jet4ComboBoxNumericProperties struct {
 func (props jet4ComboBoxNumericProperties) formProperties() []FormProperty {
 	result := []FormProperty{
 		{ID: 0x000D, Name: FormPropertyIDToName(0x000D), ValueType: "Long", Value: strconv.Itoa(props.BoundColumn)},
+		{ID: 0x001D, Name: FormPropertyIDToName(0x001D), ValueType: "Byte", Value: strconv.Itoa(int(props.BackStyle))},
 		{ID: 0x0099, Name: FormPropertyIDToName(0x0099), ValueType: "Short", Value: strconv.Itoa(props.ListRows)},
 		{ID: 0x009A, Name: FormPropertyIDToName(0x009A), ValueType: "Long", Value: strconv.Itoa(props.ListWidth)},
 		{ID: 0x0038, Name: FormPropertyIDToName(0x0038), ValueType: "Bool", Value: strconv.FormatBool(props.Locked)},
@@ -129,6 +131,7 @@ func parseJet4ComboBoxNumericTail(tail []byte) (jet4ComboBoxNumericProperties, b
 	result := jet4ComboBoxNumericProperties{
 		ListRows:    8,
 		BoundColumn: 1,
+		BackStyle:   1,
 		Visible:     true,
 	}
 	if len(tail) < 12 {

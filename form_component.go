@@ -113,6 +113,7 @@ type FormControlContent struct {
 	TextAlign        string
 	TextAlignValue   byte
 	TabIndex         int
+	ScrollBars       byte
 	BackStyle        int
 	BackColor        string
 	BackColorValue   uint32
