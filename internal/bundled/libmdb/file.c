@@ -18,6 +18,10 @@
 
 #include <inttypes.h>
 #include <stddef.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wchar.h>
+#endif
 #include "mdbtools.h"
 #include "mdbprivate.h"
 
@@ -68,6 +72,57 @@ MdbFormatConstants MdbJet3Constants = {
 
 static ssize_t _mdb_read_pg(MdbHandle *mdb, void *pg_buf, unsigned long pg);
 
+#ifdef _WIN32
+/* Go passes paths to the bridge as UTF-8. The Windows narrow-character C
+ * runtime uses the active ANSI code page, so stat/fopen cannot reliably open
+ * paths containing Chinese or other Unicode characters. */
+static wchar_t *mdb_utf8_to_utf16(const char *value)
+{
+	int length;
+	wchar_t *wide_value;
+
+	if (!value) return NULL;
+	length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
+	if (length <= 0) return NULL;
+
+	wide_value = g_malloc((size_t)length * sizeof(wchar_t));
+	if (!wide_value) return NULL;
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide_value, length)) {
+		g_free(wide_value);
+		return NULL;
+	}
+	return wide_value;
+}
+
+static int mdb_file_exists_utf8(const char *file_name)
+{
+	wchar_t *wide_name = mdb_utf8_to_utf16(file_name);
+	DWORD attributes;
+
+	if (!wide_name) return 0;
+	attributes = GetFileAttributesW(wide_name);
+	g_free(wide_name);
+	return attributes != INVALID_FILE_ATTRIBUTES;
+}
+
+static FILE *mdb_fopen_utf8(const char *file_name, const wchar_t *mode)
+{
+	wchar_t *wide_name = mdb_utf8_to_utf16(file_name);
+	FILE *file;
+
+	if (!wide_name) return NULL;
+	file = _wfopen(wide_name, mode);
+	g_free(wide_name);
+	return file;
+}
+#else
+static int mdb_file_exists_utf8(const char *file_name)
+{
+	struct stat status;
+	return stat(file_name, &status) == 0;
+}
+#endif
+
 /**
  * mdb_find_file:
  * @filename: path to MDB (database) file
@@ -81,12 +136,11 @@ static ssize_t _mdb_read_pg(MdbHandle *mdb, void *pg_buf, unsigned long pg);
 
 static char *mdb_find_file(const char *file_name)
 {
-	struct stat status;
 	gchar *mdbpath, **dir, *tmpfname;
 	unsigned int i = 0;
 
 	/* try the provided file name first */
-	if (!stat(file_name, &status)) {
+	if (mdb_file_exists_utf8(file_name)) {
 		char *result;
 		result = g_strdup(file_name);
 		if (!result)
@@ -103,7 +157,7 @@ static char *mdb_find_file(const char *file_name)
 	while (dir[i]) {
 		if (!strlen(dir[i])) continue;
 		tmpfname = g_strconcat(dir[i++], "/", file_name, NULL);
-		if (!stat(tmpfname, &status)) {
+		if (mdb_file_exists_utf8(tmpfname)) {
 			g_strfreev(dir);
 			return tmpfname;
 		}
@@ -240,12 +294,17 @@ MdbHandle *mdb_open(const char *filename, MdbFileFlags flags)
 		return NULL; 
 	}
 #ifdef _WIN32
-    char *mode = (flags & MDB_WRITABLE) ? "rb+" : "rb";
+    const wchar_t *mode = (flags & MDB_WRITABLE) ? L"rb+" : L"rb";
 #else
-    char *mode = (flags & MDB_WRITABLE) ? "r+" : "r";
+    const char *mode = (flags & MDB_WRITABLE) ? "r+" : "r";
 #endif
 
-    if ((file = fopen(filepath, mode)) == NULL) {
+#ifdef _WIN32
+    file = mdb_fopen_utf8(filepath, mode);
+#else
+    file = fopen(filepath, mode);
+#endif
+    if (file == NULL) {
 		fprintf(stderr,"Couldn't open file %s\n",filepath);
 		g_free(filepath);
 		return NULL;

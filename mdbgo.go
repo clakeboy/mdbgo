@@ -9,7 +9,7 @@ package mdbgo
 #cgo CFLAGS: -DHAVE_SETLOCALE=1
 #cgo CFLAGS: -DHAVE_SYS_STAT_H=1
 #cgo CFLAGS: -DHAVE_SYS_TYPES_H=1
-#cgo CFLAGS: -DHAVE_REALLOCF=1
+#cgo darwin CFLAGS: -DHAVE_REALLOCF=1
 #include <stdlib.h>
 #include "bridge.h"
 */

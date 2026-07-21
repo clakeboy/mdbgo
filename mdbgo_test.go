@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -78,6 +79,45 @@ func TestOpenAndClose(t *testing.T) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("second Close failed: %v", err)
+	}
+}
+
+func TestOpenUnicodePath(t *testing.T) {
+	dbPath := requireDBFile(t)
+	unicodeDir := filepath.Join(t.TempDir(), "中文数据库")
+	if err := os.Mkdir(unicodeDir, 0o755); err != nil {
+		t.Fatalf("create unicode directory: %v", err)
+	}
+	unicodePath := filepath.Join(unicodeDir, "ABIQuery - 副本.mdb")
+
+	source, err := os.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open source database: %v", err)
+	}
+	target, err := os.Create(unicodePath)
+	if err != nil {
+		_ = source.Close()
+		t.Fatalf("create unicode database path: %v", err)
+	}
+	if _, err := io.Copy(target, source); err != nil {
+		_ = source.Close()
+		_ = target.Close()
+		t.Fatalf("copy database to unicode path: %v", err)
+	}
+	if err := source.Close(); err != nil {
+		_ = target.Close()
+		t.Fatalf("close source database: %v", err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatalf("close unicode database: %v", err)
+	}
+
+	db, err := Open(unicodePath)
+	if err != nil {
+		t.Fatalf("Open unicode path failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close unicode path failed: %v", err)
 	}
 }
 
