@@ -4,7 +4,7 @@
 
 - 使用 `bundled` 模式：构建时直接编译仓库内的 `libmdb` C 源码
 - 调用方不需要额外安装系统级 `libmdb`
-- 当前提供只读能力：打开数据库、列出表、读取整张表、读取 Access 窗体内容
+- 当前提供只读能力：打开数据库、列出表和 View、还原 View SQL、读取整张表、读取 Access 窗体内容
 - 支持 SQL 查询执行：`Query(sql)`
 
 源码按职责拆分：`mdbgo.go` 只保留连接生命周期，`sql.go` 负责表和 SQL 数据读取，`form.go` 负责 Form 公共入口，`form_storage.go/form_layout.go` 负责内部存储与布局；各已实现的控件解析器位于独立的 `form_component_<type>.go` 文件中。
@@ -39,6 +39,19 @@ func main() {
         log.Fatal(err)
     }
     fmt.Println("tables:", tables)
+
+    views, err := db.Views()
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("views:", views)
+    if len(views) > 0 {
+        viewSQL, err := db.ViewSQL(views[0])
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Println(viewSQL)
+    }
 
     if len(tables) == 0 {
         return
@@ -82,6 +95,8 @@ func main() {
 - `Open(path string) (*DB, error)`
 - `(*DB).Close() error`
 - `(*DB).Tables() ([]string, error)`
+- `(*DB).Views() ([]string, error)`：列出 Access 保存查询，与原版 `mdb-queries` 一样包含 `~sq_` 内部查询
+- `(*DB).ViewSQL(viewName string) (string, error)`：从 `MSysQueries` 还原 SELECT View SQL，支持参数、别名、INNER/LEFT/RIGHT JOIN、WHERE、GROUP BY、HAVING、多字段排序、外部数据库和 `WITH OWNERACCESS OPTION`
 - `(*DB).ReadTable(tableName string) (*TableData, error)`
 - `(*DB).Query(sql string) (*TableData, error)`
 - `(*DB).Schema(tableName string) (*TableSchema, error)`

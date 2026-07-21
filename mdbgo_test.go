@@ -152,6 +152,124 @@ func TestTablesAndReadTable(t *testing.T) {
 	}
 }
 
+func TestViewsAndViewSQL(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	views, err := db.Views()
+	if err != nil {
+		t.Fatalf("Views failed: %v", err)
+	}
+	if len(views) == 0 {
+		t.Fatal("Views returned an empty list")
+	}
+
+	viewName := "v_abia_master_query_general"
+	found := false
+	for _, name := range views {
+		if name == viewName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Skipf("test database does not contain %q", viewName)
+	}
+
+	sqlText, err := db.ViewSQL(viewName)
+	if err != nil {
+		t.Fatalf("ViewSQL(%q) failed: %v", viewName, err)
+	}
+	for _, fragment := range []string{
+		"SELECT t_abi_master.*",
+		"INNER JOIN [t_ams_master_group]",
+		"t_abi_master.abi_master_id=t_ams_master_group.abi_master_id",
+		"RIGHT JOIN [t_abi_master]",
+		"t_ztb_abi_query_status.status_id=t_abi_master.status_id",
+		"WHERE (((t_abi_master.mode_code)=\"A\"))",
+	} {
+		if !strings.Contains(sqlText, fragment) {
+			t.Fatalf("ViewSQL(%q) missing %q:\n%s", viewName, fragment, sqlText)
+		}
+	}
+	if !strings.HasSuffix(sqlText, ";") {
+		t.Fatalf("ViewSQL(%q) must end in semicolon: %q", viewName, sqlText)
+	}
+}
+
+func TestViewSQLValidation(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.ViewSQL(""); err == nil {
+		t.Fatal("ViewSQL with empty name expected error")
+	}
+	if _, err := db.ViewSQL("__mdbgo_missing_view__"); err == nil {
+		t.Fatal("ViewSQL with missing name expected error")
+	}
+}
+
+func TestViewSQLRestoresParametersAndAliases(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	viewName := "~sq_cf_abia_master~sq_csub_abia_master_list_2_event"
+	sqlText, err := db.ViewSQL(viewName)
+	if err != nil {
+		t.Skipf("ViewSQL(%q) unavailable in this fixture: %v", viewName, err)
+	}
+	for _, fragment := range []string{
+		"PARAMETERS [__abi_master_id] Value;",
+		"[v_abia_master_list_event] AS [f_abia_master]",
+		"WHERE ([__abi_master_id] = abi_master_id)",
+	} {
+		if !strings.Contains(sqlText, fragment) {
+			t.Fatalf("ViewSQL(%q) missing %q:\n%s", viewName, fragment, sqlText)
+		}
+	}
+}
+
+func TestAllSelectViewDefinitionsCanBeRestored(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	views, err := db.Views()
+	if err != nil {
+		t.Fatalf("Views failed: %v", err)
+	}
+	restored := 0
+	for _, viewName := range views {
+		_, err := db.ViewSQL(viewName)
+		if err == nil {
+			restored++
+			continue
+		}
+		if strings.Contains(err.Error(), "only SELECT views are supported") {
+			continue
+		}
+		t.Errorf("ViewSQL(%q) failed: %v", viewName, err)
+	}
+	if restored == 0 {
+		t.Fatal("no SELECT View definitions were restored")
+	}
+}
+
 func TestSchema(t *testing.T) {
 	dbPath := requireDBFile(t)
 

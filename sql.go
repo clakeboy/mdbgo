@@ -76,6 +76,57 @@ func (db *DB) Tables() ([]string, error) {
 	return result, nil
 }
 
+// Views 返回当前数据库中的 Access 保存查询名称列表。
+// 与原版 mdb-queries 一致，列表中也可能包含 Access 自动生成的 ~sq_ 查询。
+func (db *DB) Views() ([]string, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var cNames **C.char
+	var cCount C.size_t
+
+	rc := C.mdbgo_list_views(db.ptr, &cNames, &cCount, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
+	if rc != 0 {
+		return nil, errors.New(cStringFromBuf(errBuf))
+	}
+	defer C.mdbgo_free_string_array(cNames, cCount)
+
+	count := int(cCount)
+	result := make([]string, 0, count)
+	if count == 0 {
+		return result, nil
+	}
+	names := unsafe.Slice((**C.char)(unsafe.Pointer(cNames)), count)
+	for i := 0; i < count; i++ {
+		result = append(result, C.GoString(names[i]))
+	}
+	return result, nil
+}
+
+// ViewSQL 从 MSysQueries 还原指定 Access 保存查询的 SQL。
+// 当前完整支持普通 SELECT View，包括 JOIN、参数、分组、HAVING 和排序。
+func (db *DB) ViewSQL(viewName string) (string, error) {
+	if db == nil || db.ptr == nil {
+		return "", errors.New("db is closed")
+	}
+	if strings.TrimSpace(viewName) == "" {
+		return "", errors.New("view name is empty")
+	}
+
+	cName := C.CString(viewName)
+	defer C.free(unsafe.Pointer(cName))
+	errBuf := make([]byte, cErrBufSize)
+	var cSQL *C.char
+	rc := C.mdbgo_get_view_sql(db.ptr, cName, &cSQL, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
+	if rc != 0 {
+		return "", errors.New(cStringFromBuf(errBuf))
+	}
+	defer C.mdbgo_free_string(cSQL)
+	return C.GoString(cSQL), nil
+}
+
 // ReadTable 读取整张表到内存并返回。
 func (db *DB) ReadTable(tableName string) (*TableData, error) {
 	if db == nil || db.ptr == nil {

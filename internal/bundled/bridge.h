@@ -98,6 +98,12 @@ void mdbgo_close(mdbgo_db_t *db);
 /* 返回用户表名列表。names 需用 mdbgo_free_string_array 释放。 */
 int mdbgo_list_tables(mdbgo_db_t *db, char ***out_names, size_t *out_count, char *err, size_t err_len);
 
+/* 返回 Access 保存查询（View）名称列表。names 需用 mdbgo_free_string_array 释放。 */
+int mdbgo_list_views(mdbgo_db_t *db, char ***out_names, size_t *out_count, char *err, size_t err_len);
+
+/* 还原指定 Access 保存查询的 SQL。out_sql 需用 mdbgo_free_string 释放。 */
+int mdbgo_get_view_sql(mdbgo_db_t *db, const char *view_name, char **out_sql, char *err, size_t err_len);
+
 /* 按表名读取所有数据到内存。out 需用 mdbgo_free_table_data 释放。 */
 int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t *out, char *err, size_t err_len);
 
@@ -106,6 +112,9 @@ int mdbgo_query(mdbgo_db_t *db, const char *sql, mdbgo_table_data_t *out, char *
 
 /* 释放字符串数组（数组本身和每个元素）。 */
 void mdbgo_free_string_array(char **arr, size_t count);
+
+/* 释放 C bridge 返回的单个字符串。 */
+void mdbgo_free_string(char *value);
 
 /* 释放 mdbgo_read_table 返回的数据。 */
 void mdbgo_free_table_data(mdbgo_table_data_t *data);

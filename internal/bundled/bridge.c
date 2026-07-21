@@ -1258,3 +1258,6 @@ fail:
 void mdbgo_free_int_array(mdbgo_int_array_t *out) {
     mdbgo_free_int_array_inner(out);
 }
+
+/* View/保存查询支持单独维护，并与 bridge.c 处于同一编译单元。 */
+#include "view.c"
