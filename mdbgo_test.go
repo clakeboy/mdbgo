@@ -1494,14 +1494,25 @@ func TestParseJet4ButtonNumericTail(t *testing.T) {
 			},
 		},
 		{
-			name: "newer layout default height",
+			name: "F7 mask keeps default height",
 			tail: []byte{0xFD, 0x68, 0x00, 0x31, 0xF7,
 				0x60, 0xE4, 0x0C, 0x61, 0xEC, 0x04, 0x62, 0x48, 0x03,
 				0x69, 0x06, 0x00, 0x9D, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x10},
 			want: jet4ButtonNumericProperties{
 				TabIndex: 6, HasTabIndex: true, BackStyle: 1,
 				BackColor: "#ffffff", BackColorValue: 16777215,
-				Geometry: formControlGeometry{Left: 3300, Top: 1260, Width: 840, Height: 420}, HasGeometry: true,
+				Geometry: formControlGeometry{Left: 3300, Top: 1260, Width: 840, Height: 360}, HasGeometry: true,
+			},
+		},
+		{
+			name: "F7 picture button keeps default height",
+			tail: []byte{0xFD, 0x68, 0x00, 0x31, 0xF7,
+				0x60, 0x60, 0x36, 0x62, 0xA4, 0x01, 0x68, 0xBC, 0x02,
+				0x69, 0x04, 0x00, 0x9D, 0x00, 0x00, 0x80, 0x00, 0xDC, 0x14},
+			want: jet4ButtonNumericProperties{
+				TabIndex: 4, HasTabIndex: true, BackStyle: 1,
+				BackColor: "#ffffff", BackColorValue: 16777215,
+				Geometry: formControlGeometry{Left: 13920, Width: 420, Height: 360}, HasGeometry: true,
 			},
 		},
 		{

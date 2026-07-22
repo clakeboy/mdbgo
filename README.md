@@ -126,8 +126,8 @@ MDBGO_EXPORT_FORM_NAME=f_abia_master \
 go test -run TestExportFormAsAccessJSON -v -count=1
 
 MDBGO_TEST_DB=testdb/mdbs/dms.mdb \
-MDBGO_EXPORT_FORM_NAME=f_oem_hbl_query \
-MDBGO_EXPORT_FORM_OUTPUT=testdb/f_oem_hbl_query_mdbgo.json \
+MDBGO_EXPORT_FORM_NAME=f_abi_batch \
+MDBGO_EXPORT_FORM_OUTPUT=testdb/f_abi_batch_mdbgo.json \
 go test -run TestExportFormAsAccessJSON -v -count=1
 ```
 

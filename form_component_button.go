@@ -141,22 +141,9 @@ func parseJet4ButtonNumericTail(tail []byte) (jet4ButtonNumericProperties, bool)
 	if recordPos < 0 {
 		return result, false
 	}
-	// 0x31 后的布局掩码及前置 0x0A 标志决定省略 0x63 时所采用的
-	// Access 原生默认高度。F7/FF 或 0x0A 使用 420，其余使用 360 twips。
-	hasTallDefaultFlag := false
-	for pos := recordPos + 3; pos+1 < len(tail) && pos < recordPos+12; pos++ {
-		if tail[pos] == 0x0A {
-			hasTallDefaultFlag = true
-		}
-		if tail[pos] != 0x31 {
-			continue
-		}
-		if hasTallDefaultFlag || tail[pos+1]&0x20 != 0 {
-			result.Geometry.Height = 420
-		}
-		break
-	}
-
+	// Height is optional in the compact record. When 0x63 is absent, Access
+	// keeps the 360-twip CommandButton default. The 0x31 mask also describes
+	// unrelated properties, so values such as F7 must not imply a taller button.
 	for pos := recordPos + 3; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
