@@ -16,6 +16,7 @@ package mdbgo
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +28,9 @@ import (
 type TableData struct {
 	Columns []string
 	Rows    [][]string
+	// Nulls mirrors Rows and distinguishes database NULL from an empty value.
+	// Legacy producers may leave it nil.
+	Nulls [][]bool `json:"Nulls,omitempty"`
 }
 
 // ColumnSchema 描述单列的元信息。
@@ -51,6 +55,13 @@ func (db *DB) Tables() ([]string, error) {
 	if db == nil || db.ptr == nil {
 		return nil, errors.New("db is closed")
 	}
+	db.metaMu.Lock()
+	if db.tableCache != nil {
+		result := append([]string(nil), db.tableCache...)
+		db.metaMu.Unlock()
+		return result, nil
+	}
+	db.metaMu.Unlock()
 
 	errBuf := make([]byte, cErrBufSize)
 	var cNames **C.char
@@ -73,6 +84,13 @@ func (db *DB) Tables() ([]string, error) {
 	for i := 0; i < count; i++ {
 		result = append(result, C.GoString(names[i]))
 	}
+	db.metaMu.Lock()
+	db.tableCache = append([]string(nil), result...)
+	db.tableLookup = make(map[string]string, len(result))
+	for _, name := range result {
+		db.tableLookup[strings.ToLower(name)] = name
+	}
+	db.metaMu.Unlock()
 	return result, nil
 }
 
@@ -82,6 +100,13 @@ func (db *DB) Views() ([]string, error) {
 	if db == nil || db.ptr == nil {
 		return nil, errors.New("db is closed")
 	}
+	db.metaMu.Lock()
+	if db.viewCache != nil {
+		result := append([]string(nil), db.viewCache...)
+		db.metaMu.Unlock()
+		return result, nil
+	}
+	db.metaMu.Unlock()
 
 	errBuf := make([]byte, cErrBufSize)
 	var cNames **C.char
@@ -102,6 +127,13 @@ func (db *DB) Views() ([]string, error) {
 	for i := 0; i < count; i++ {
 		result = append(result, C.GoString(names[i]))
 	}
+	db.metaMu.Lock()
+	db.viewCache = append([]string(nil), result...)
+	db.viewLookup = make(map[string]string, len(result))
+	for _, name := range result {
+		db.viewLookup[strings.ToLower(name)] = name
+	}
+	db.metaMu.Unlock()
 	return result, nil
 }
 
@@ -125,6 +157,36 @@ func (db *DB) ViewSQL(viewName string) (string, error) {
 	}
 	defer C.mdbgo_free_string(cSQL)
 	return C.GoString(cSQL), nil
+}
+
+// TableRowCount 从 Access 表定义页读取记录数，不扫描或加载数据行。
+//
+// 该值通常能快速反映当前记录数；但 MDB 文件未正常关闭时，表定义页中的
+// 记录数可能为 0，此时如需精确结果应通过查询或 ReadTable 扫描数据行。
+func (db *DB) TableRowCount(tableName string) (uint64, error) {
+	if db == nil || db.ptr == nil {
+		return 0, errors.New("db is closed")
+	}
+	if tableName == "" {
+		return 0, errors.New("table name is empty")
+	}
+
+	cName := C.CString(tableName)
+	defer C.free(unsafe.Pointer(cName))
+
+	errBuf := make([]byte, cErrBufSize)
+	var count C.size_t
+	rc := C.mdbgo_table_row_count(
+		db.ptr,
+		cName,
+		&count,
+		(*C.char)(unsafe.Pointer(&errBuf[0])),
+		C.size_t(len(errBuf)),
+	)
+	if rc != 0 {
+		return 0, errors.New(cStringFromBuf(errBuf))
+	}
+	return uint64(count), nil
 }
 
 // ReadTable 读取整张表到内存并返回。
@@ -151,28 +213,57 @@ func (db *DB) ReadTable(tableName string) (*TableData, error) {
 	return rawTableDataToGo(&raw)
 }
 
-// Query 执行 SQL 并返回结果集。
-// 当前不允许 CONNECT/DISCONNECT 语句，以避免影响共享 DB 句柄生命周期。
+// Query 执行只读 Access SQL 并返回兼容的字符串结果集。
+// 新代码优先使用 QueryContext，以获得类型化结果、参数和取消支持。
 func (db *DB) Query(sql string) (*TableData, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
+	rows, err := db.QueryContext(context.Background(), sql, nil)
+	if err != nil {
+		return nil, err
 	}
-	if sql == "" {
+	defer rows.Close()
+
+	cols := rows.Columns()
+	result := &TableData{Columns: make([]string, len(cols))}
+	for i := range cols {
+		result.Columns[i] = cols[i].Name
+	}
+	for rows.Next() {
+		values := rows.Values()
+		row := make([]string, len(values))
+		nullRow := make([]bool, len(values))
+		for i := range values {
+			row[i] = values[i].String()
+			nullRow[i] = values[i].IsNull()
+		}
+		result.Rows = append(result.Rows, row)
+		result.Nulls = append(result.Nulls, nullRow)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// queryLegacy retains the bundled mdb-sql path for compatibility benchmarks
+// while the Go engine is being validated. It is intentionally not exported.
+func (db *DB) queryLegacy(sql string) (*TableData, error) {
+	if strings.TrimSpace(sql) == "" {
 		return nil, errors.New("sql is empty")
 	}
-
+	session, release, err := db.acquireQuerySession(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	cSQL := C.CString(sql)
 	defer C.free(unsafe.Pointer(cSQL))
-
 	errBuf := make([]byte, cErrBufSize)
 	var raw C.mdbgo_table_data_t
-
-	rc := C.mdbgo_query(db.ptr, cSQL, &raw, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
+	rc := C.mdbgo_query(session.ptr, cSQL, &raw, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
 	if rc != 0 {
 		return nil, errors.New(cStringFromBuf(errBuf))
 	}
 	defer C.mdbgo_free_table_data(&raw)
-
 	return rawTableDataToGo(&raw)
 }
 
@@ -184,6 +275,14 @@ func (db *DB) Schema(tableName string) (*TableSchema, error) {
 	if tableName == "" {
 		return nil, errors.New("table name is empty")
 	}
+	cacheKey := strings.ToLower(tableName)
+	db.metaMu.Lock()
+	if cached := db.schemaCache[cacheKey]; cached != nil {
+		result := cloneTableSchema(cached)
+		db.metaMu.Unlock()
+		return result, nil
+	}
+	db.metaMu.Unlock()
 
 	cName := C.CString(tableName)
 	defer C.free(unsafe.Pointer(cName))
@@ -214,10 +313,27 @@ func (db *DB) Schema(tableName string) (*TableSchema, error) {
 		}
 	}
 
-	return &TableSchema{
+	result := &TableSchema{
 		TableName: C.GoString(raw.table_name),
 		Columns:   cols,
-	}, nil
+	}
+	db.metaMu.Lock()
+	if db.schemaCache == nil {
+		db.schemaCache = make(map[string]*TableSchema)
+	}
+	db.schemaCache[cacheKey] = cloneTableSchema(result)
+	db.metaMu.Unlock()
+	return result, nil
+}
+
+func cloneTableSchema(schema *TableSchema) *TableSchema {
+	if schema == nil {
+		return nil
+	}
+	return &TableSchema{
+		TableName: schema.TableName,
+		Columns:   append([]ColumnSchema(nil), schema.Columns...),
+	}
 }
 
 // rawTableDataToGo 把 C 侧结果结构深拷贝为 Go 切片，随后可安全释放 C 内存。
@@ -241,21 +357,37 @@ func rawTableDataToGo(raw *C.mdbgo_table_data_t) (*TableData, error) {
 	}
 
 	rows := make([][]string, rowCount)
+	var nulls [][]bool
+	var cNulls []C.uchar
+	if raw.nulls != nil && colCount > 0 && rowCount > 0 {
+		nulls = make([][]bool, rowCount)
+		cNulls = unsafe.Slice((*C.uchar)(unsafe.Pointer(raw.nulls)), rowCount*colCount)
+	}
 	if colCount > 0 && rowCount > 0 {
 		total := rowCount * colCount
 		cCells := unsafe.Slice((**C.char)(unsafe.Pointer(raw.cells)), total)
 
 		for r := 0; r < rowCount; r++ {
 			row := make([]string, colCount)
+			var nullRow []bool
+			if nulls != nil {
+				nullRow = make([]bool, colCount)
+			}
 			base := r * colCount
 			for c := 0; c < colCount; c++ {
 				row[c] = C.GoString(cCells[base+c])
+				if nullRow != nil {
+					nullRow[c] = cNulls[base+c] != 0
+				}
 			}
 			rows[r] = row
+			if nullRow != nil {
+				nulls[r] = nullRow
+			}
 		}
 	}
 
-	return &TableData{Columns: columns, Rows: rows}, nil
+	return &TableData{Columns: columns, Rows: rows, Nulls: nulls}, nil
 }
 
 // escapeSQLString 转义 SQL 字符串字面量中的单引号。

@@ -166,15 +166,15 @@ func (db *DB) ReadFormAccessObjectChunks(formName string) ([]AccessObjectChunk, 
 	}
 	parsed, _ := ParseFormPropsFromLvProp(streams.LvProp)
 
-	ids, err := db.listAccessObjectIDs()
+	objects, err := db.readAccessObjectDataAll()
 	if err != nil {
 		return nil, err
 	}
 
-	chunks := make([]AccessObjectChunk, 0, len(ids))
-	for _, id := range ids {
-		obj, err := db.ReadAccessObjectDataByID(id)
-		if err != nil || obj == nil || len(obj.Data) == 0 {
+	chunks := make([]AccessObjectChunk, 0, len(objects))
+	for i := range objects {
+		obj := &objects[i]
+		if len(obj.Data) == 0 {
 			continue
 		}
 		score := scoreAccessObjectData(formName, obj.Data, parsed)
@@ -182,7 +182,7 @@ func (db *DB) ReadFormAccessObjectChunks(formName string) ([]AccessObjectChunk, 
 			continue
 		}
 		chunks = append(chunks, AccessObjectChunk{
-			ObjectID: id,
+			ObjectID: obj.ObjectID,
 			Score:    score,
 			Data:     obj.Data,
 		})

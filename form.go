@@ -18,9 +18,11 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 )
 
@@ -54,6 +56,7 @@ type FormContent struct {
 	Width           int
 	Height          int
 	Caption         string
+	DefaultView     int
 	RecordSource    string
 	BackColor       string
 	BackColorValue  uint32
@@ -129,6 +132,30 @@ func (db *DB) ExportForms() ([]FormInfo, error) {
 	return result, nil
 }
 
+// ExportForm 按名称导出单个 Access 窗体及其组件信息。
+//
+// 窗体名称按 Access 的规则不区分大小写；返回的 Name 保留数据库中的原始名称。
+func (db *DB) ExportForm(formName string) (*FormInfo, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+	if strings.TrimSpace(formName) == "" {
+		return nil, errors.New("form name is empty")
+	}
+
+	forms, err := db.ExportForms()
+	if err != nil {
+		return nil, err
+	}
+	for i := range forms {
+		if strings.EqualFold(forms[i].Name, formName) {
+			return &forms[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("form not found: %s", formName)
+}
+
 // ReadFormStreams 读取指定窗体的原始设计流（Lv/LvProp/LvExtra）。
 //
 // 这些字节是 Access 内部二进制格式，供 Go 侧自行解析。
@@ -189,6 +216,51 @@ func (db *DB) ReadAccessObjectDataByID(objectID int) (*AccessObjectData, error) 
 	}, nil
 }
 
+// readAccessObjectDataAll 单次顺序扫描 MSysAccessObjects，避免按 ID 重复整表扫描。
+func (db *DB) readAccessObjectDataAll() ([]AccessObjectData, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var raw C.mdbgo_access_object_data_array_t
+	rc := C.mdbgo_read_access_object_data_all(
+		db.ptr,
+		&raw,
+		(*C.char)(unsafe.Pointer(&errBuf[0])),
+		C.size_t(len(errBuf)),
+	)
+	if rc != 0 {
+		return nil, errors.New(cStringFromBuf(errBuf))
+	}
+	defer C.mdbgo_free_access_object_data_array(&raw)
+
+	n := int(raw.count)
+	if n <= 0 || raw.values == nil {
+		return nil, nil
+	}
+	cValues := unsafe.Slice((*C.mdbgo_access_object_data_t)(unsafe.Pointer(raw.values)), n)
+	result := make([]AccessObjectData, n)
+	for i := range cValues {
+		result[i] = AccessObjectData{
+			ObjectID: int(cValues[i].object_id),
+			Data:     cBytesToGo(cValues[i].data, int(cValues[i].len)),
+		}
+	}
+	return result, nil
+}
+
+// ExportFormContent 读取并导出指定窗体的完整内容。
+//
+// 此方法只解析指定窗体，不会调用 ExportFormContents 或解析其他窗体。
+func (db *DB) ExportFormContent(formName string) (*FormContent, error) {
+	streams, err := db.ReadFormObjectStreams(formName)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFormContent(streams)
+}
+
 // ExportFormContents 一次读取内部 OLE 容器并导出全部窗体内容。
 // 相比循环调用 ReadFormContent，此方法不会为每个窗体重复重组 MSysAccessObjects。
 func (db *DB) ExportFormContents() ([]FormContent, error) {
@@ -212,28 +284,59 @@ func (db *DB) ExportFormContents() ([]FormContent, error) {
 		return strings.ToLower(formNames[i]) < strings.ToLower(formNames[j])
 	})
 
-	contents := make([]FormContent, 0, len(formNames))
-	for _, formName := range formNames {
-		streams, err := formObjectStreamsFromEntries(entries, formName)
-		if err != nil {
-			return nil, err
-		}
-		content, err := ParseFormContent(streams)
-		if err != nil {
-			return nil, err
-		}
-		contents = append(contents, *content)
+	contents := make([]FormContent, len(formNames))
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	if workers > len(formNames) {
+		workers = len(formNames)
+	}
+
+	taskCh := make(chan int, len(formNames))
+	for i := 0; i < len(formNames); i++ {
+		taskCh <- i
+	}
+	close(taskCh)
+
+	var wg sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range taskCh {
+				formName := formNames[idx]
+				streams, err := formObjectStreamsFromEntries(entries, formName)
+				if err != nil {
+					errOnce.Do(func() { firstErr = err })
+					return
+				}
+				content, err := ParseFormContent(streams)
+				if err != nil {
+					errOnce.Do(func() { firstErr = err })
+					return
+				}
+				contents[idx] = *content
+			}
+		}()
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return contents, nil
 }
 
 // ReadFormContent 读取并解析指定窗体的控件目录和设计属性。
 func (db *DB) ReadFormContent(formName string) (*FormContent, error) {
-	streams, err := db.ReadFormObjectStreams(formName)
-	if err != nil {
-		return nil, err
-	}
-	return ParseFormContent(streams)
+	return db.ExportFormContent(formName)
 }
 
 // ParseFormContent 解析 ReadFormObjectStreams 返回的原始设计流。
@@ -263,13 +366,22 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	jet4SectionProps := parseJet4FormSectionProperties(streams.Blob, controls)
 	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(streams.Blob, controls)
 	formProps = mergeFormProperties(formProps, jet4FormProps)
+	if defaultView, ok := parseJet4FormDefaultView(streams.Blob); ok {
+		formProps = mergeFormProperties(formProps, []FormProperty{{
+			ID:        0x0093,
+			Name:      FormPropertyIDToName(0x0093),
+			ValueType: "Byte",
+			Value:     strconv.Itoa(defaultView),
+		}})
+	}
 
 	content := &FormContent{
-		FormName:   streams.FormName,
-		StorageID:  streams.StorageID,
-		Width:      jet4FormWidth,
-		Properties: formProps,
-		Controls:   make([]FormControlContent, 0, len(controls)+len(controlGroups)),
+		FormName:    streams.FormName,
+		StorageID:   streams.StorageID,
+		Width:       jet4FormWidth,
+		DefaultView: formPropertyInt(formProps, 0x0093),
+		Properties:  formProps,
+		Controls:    make([]FormControlContent, 0, len(controls)+len(controlGroups)),
 	}
 	usedGroups := make([]bool, len(controlGroups))
 	for i, control := range controls {

@@ -53,24 +53,23 @@ func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 		return nil, errors.New("db is closed")
 	}
 
-	ids, err := db.listAccessObjectIDs()
+	objects, err := db.readAccessObjectDataAll()
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
+	if len(objects) == 0 {
 		return nil, errors.New("MSysAccessObjects is empty")
 	}
-	sort.Ints(ids)
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].ObjectID < objects[j].ObjectID
+	})
 
 	compoundMagic := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
 	result := &AccessObjectContainer{FirstObjectID: -1, LastObjectID: -1}
 	started := false
-	for _, id := range ids {
-		obj, err := db.ReadAccessObjectDataByID(id)
-		if err != nil {
-			return nil, fmt.Errorf("read MSysAccessObjects.Data id=%d: %w", id, err)
-		}
-		if obj == nil || len(obj.Data) == 0 {
+	for i := range objects {
+		obj := &objects[i]
+		if len(obj.Data) == 0 {
 			continue
 		}
 		if !started {
@@ -79,12 +78,12 @@ func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 				continue
 			}
 			started = true
-			result.FirstObjectID = id
+			result.FirstObjectID = obj.ObjectID
 			result.Data = append(result.Data, obj.Data[off:]...)
 		} else {
 			result.Data = append(result.Data, obj.Data...)
 		}
-		result.LastObjectID = id
+		result.LastObjectID = obj.ObjectID
 	}
 	if len(result.Data) == 0 {
 		return nil, errors.New("MSysAccessObjects contains no OLE Compound container")

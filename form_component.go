@@ -371,6 +371,8 @@ func FormPropertyIDToName(id uint16) string {
 		return "TextAlign"
 	case 0x008D:
 		return "Top"
+	case 0x0093:
+		return "DefaultView"
 	case 0x0094:
 		return "Visible"
 	case 0x0096:
@@ -744,6 +746,23 @@ func parseJet4FormWidth(data []byte) int {
 	return 0
 }
 
+// parseJet4FormDefaultView 读取 Jet4 Form Blob 固定头中的窗体模板类型。
+// 0x06 表示单窗体，0x0F 表示连续窗体；该标记位于 0x0096
+// 窗体属性头之后。其它视图保留给可直接携带 DefaultView 属性的格式解析。
+func parseJet4FormDefaultView(data []byte) (int, bool) {
+	if len(data) < 11 || le16(data) > 0x0014 || le16(data[8:]) != 0x0096 {
+		return 0, false
+	}
+	switch data[10] {
+	case 0x06:
+		return 0, true
+	case 0x0F:
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
 type jet4TaggedTextField struct {
 	Tag   byte
 	Value string
@@ -1036,10 +1055,14 @@ func hasJet4ControlNameBoundary(data []byte, offset, byteLen int) bool {
 		return false
 	}
 	// 控件名可能紧跟任意二进制记录，不能把前一个 uint16 普遍解释成
-	// Unicode 标识符。排除已知的名称片段误命中，例如在 lbl_house_no
-	// 中命中 house_no，或在 entry_seq_code1 中命中 entry_seq_code。
-	if offset >= 2 && le16(data[offset-2:]) == '_' {
-		return false
+	// Unicode 标识符；但若前一项明确是 ASCII 标识符字符，当前命中一定
+	// 只是较长名称的后缀，例如在 EventLog 中命中 Log。
+	if offset >= 2 {
+		previous := rune(le16(data[offset-2:]))
+		if previous == '_' || previous >= '0' && previous <= '9' ||
+			previous >= 'A' && previous <= 'Z' || previous >= 'a' && previous <= 'z' {
+			return false
+		}
 	}
 	if offset+byteLen+2 <= len(data) {
 		next := rune(le16(data[offset+byteLen:]))
@@ -1266,6 +1289,18 @@ func formPropertyText(props []FormProperty, id uint16) string {
 		}
 	}
 	return ""
+}
+
+func formPropertyInt(props []FormProperty, id uint16) int {
+	for _, prop := range props {
+		if prop.ID != id {
+			continue
+		}
+		if value, err := strconv.Atoi(strings.TrimSpace(prop.Value)); err == nil {
+			return value
+		}
+	}
+	return 0
 }
 
 func formPropertyTextAny(props []FormProperty, ids ...uint16) string {

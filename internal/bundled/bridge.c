@@ -174,6 +174,20 @@ static void mdbgo_free_blob_data_inner(mdbgo_blob_data_t *out) {
     out->len = 0;
 }
 
+static void mdbgo_free_access_object_data_array_inner(mdbgo_access_object_data_array_t *out) {
+    size_t i;
+
+    if (!out) {
+        return;
+    }
+    for (i = 0; i < out->count; i++) {
+        free(out->values[i].data);
+    }
+    free(out->values);
+    out->values = NULL;
+    out->count = 0;
+}
+
 static void mdbgo_free_int_array_inner(mdbgo_int_array_t *out) {
     if (!out) {
         return;
@@ -358,12 +372,33 @@ void mdbgo_free_string_array(char **arr, size_t count) {
     mdbgo_free_partial_string_array(arr, count);
 }
 
+int mdbgo_table_row_count(mdbgo_db_t *db, const char *table_name, size_t *out_count, char *err, size_t err_len) {
+    MdbTableDef *table;
+
+    if (!db || !db->mdb || !table_name || !out_count) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+
+    *out_count = 0;
+    table = mdb_read_table_by_name(db->mdb, (gchar *)table_name, MDB_TABLE);
+    if (!table) {
+        mdbgo_set_error(err, err_len, "table not found: %s", table_name);
+        return -1;
+    }
+
+    *out_count = (size_t)table->num_rows;
+    mdb_free_tabledef(table);
+    return 0;
+}
+
 int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t *out, char *err, size_t err_len) {
     MdbTableDef *table;
     char **bound_values = NULL;
     int *bound_lens = NULL;
     char **columns = NULL;
     char **cells = NULL;
+    unsigned char *nulls = NULL;
     size_t col_count;
     size_t row_count;
     size_t row_cap;
@@ -422,16 +457,24 @@ int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t 
         if (row_count == row_cap) {
             size_t new_cap = (row_cap == 0) ? 64 : (row_cap * 2);
             char **new_cells = (char **)realloc(cells, new_cap * col_count * sizeof(char *));
+            unsigned char *new_nulls;
             if (!new_cells) {
                 mdbgo_set_error(err, err_len, "out of memory");
                 goto fail;
             }
             cells = new_cells;
+            new_nulls = (unsigned char *)realloc(nulls, new_cap * col_count * sizeof(unsigned char));
+            if (!new_nulls) {
+                mdbgo_set_error(err, err_len, "out of memory");
+                goto fail;
+            }
+            nulls = new_nulls;
             row_cap = new_cap;
         }
 
         base = row_count * col_count;
         for (i = 0; i < col_count; i++) {
+            MdbColumn *col = g_ptr_array_index(table->columns, (guint)i);
             int value_len = bound_lens[i];
             char *cell;
 
@@ -450,6 +493,7 @@ int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t 
             }
             cell[value_len] = '\0';
             cells[base + i] = cell;
+            nulls[base + i] = col ? col->is_null : 0;
             used_cell_count++;
         }
 
@@ -466,11 +510,13 @@ int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t 
     out->columns = columns;
     out->col_count = col_count;
     out->cells = cells;
+    out->nulls = nulls;
     out->row_count = row_count;
     return 0;
 
 fail:
     mdbgo_free_partial_cells(cells, used_cell_count);
+    free(nulls);
 
     if (columns) {
         for (i = 0; i < col_count; i++) {
@@ -620,6 +666,7 @@ void mdbgo_free_table_data(mdbgo_table_data_t *data) {
         }
         free(data->cells);
     }
+    free(data->nulls);
 
     memset(data, 0, sizeof(*data));
 }
@@ -1187,6 +1234,131 @@ fail:
 
 void mdbgo_free_blob_data(mdbgo_blob_data_t *out) {
     mdbgo_free_blob_data_inner(out);
+}
+
+int mdbgo_read_access_object_data_all(mdbgo_db_t *db, mdbgo_access_object_data_array_t *out, char *err, size_t err_len) {
+    MdbTableDef *table = NULL;
+    char *id_buf = NULL;
+    int data_len_dummy = 0;
+    int idx_data;
+    MdbColumn *col_data = NULL;
+    mdbgo_access_object_data_t *values = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+
+    if (!db || !db->mdb || !out) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    table = mdb_read_table_by_name(db->mdb, (gchar *)"MSysAccessObjects", MDB_ANY);
+    if (!table) {
+        mdbgo_set_error(err, err_len, "failed to read MSysAccessObjects");
+        goto fail;
+    }
+    if (!mdb_read_columns(table)) {
+        mdbgo_set_error(err, err_len, "failed to read MSysAccessObjects columns");
+        goto fail;
+    }
+
+    id_buf = (char *)calloc(1, db->mdb->bind_size);
+    if (!id_buf) {
+        mdbgo_set_error(err, err_len, "out of memory");
+        goto fail;
+    }
+    if (mdb_bind_column(table, 2, id_buf, NULL) == -1) {
+        mdbgo_set_error(err, err_len, "failed to bind ID (column 2)");
+        goto fail;
+    }
+    idx_data = mdb_bind_column(table, 1, NULL, &data_len_dummy);
+    if (idx_data == -1) {
+        mdbgo_set_error(err, err_len, "failed to bind Data (column 1)");
+        goto fail;
+    }
+    col_data = (MdbColumn *)g_ptr_array_index(table->columns, (guint)(idx_data - 1));
+    if (!col_data) {
+        mdbgo_set_error(err, err_len, "invalid Data column metadata");
+        goto fail;
+    }
+
+    mdb_rewind_table(table);
+    while (mdb_fetch_row(table)) {
+        mdbgo_access_object_data_t *item;
+        size_t ole_len = 0;
+        void *ole = NULL;
+
+        if (count == cap) {
+            size_t new_cap = (cap == 0) ? 32 : (cap * 2);
+            mdbgo_access_object_data_t *new_values =
+                (mdbgo_access_object_data_t *)realloc(values, new_cap * sizeof(*values));
+            if (!new_values) {
+                mdbgo_set_error(err, err_len, "out of memory");
+                goto fail;
+            }
+            values = new_values;
+            cap = new_cap;
+        }
+
+        item = &values[count];
+        memset(item, 0, sizeof(*item));
+        item->object_id = atoi(id_buf);
+        count++;
+
+        if (col_data->cur_value_len > 0 && col_data->cur_value_start >= 0 &&
+            (size_t)(col_data->cur_value_start + col_data->cur_value_len) <= db->mdb->fmt->pg_size) {
+            if (mdbgo_copy_stream_bytes(
+                    db->mdb->pg_buf + col_data->cur_value_start,
+                    (size_t)col_data->cur_value_len,
+                    &item->data,
+                    &item->len) != 0) {
+                mdbgo_set_error(err, err_len, "out of memory");
+                goto fail;
+            }
+        } else {
+            ole = mdb_ole_read_full(db->mdb, col_data, &ole_len);
+            if (ole && ole_len > 0 &&
+                mdbgo_copy_stream_bytes(ole, ole_len, &item->data, &item->len) != 0) {
+                free(ole);
+                mdbgo_set_error(err, err_len, "out of memory");
+                goto fail;
+            }
+            free(ole);
+        }
+
+        if (item->len == 0) {
+            mdbgo_set_error(
+                err,
+                err_len,
+                "access object data is empty for id=%d (cur_start=%d cur_len=%d bind_len=%d col_type=%d)",
+                item->object_id,
+                col_data->cur_value_start,
+                col_data->cur_value_len,
+                data_len_dummy,
+                col_data->col_type);
+            goto fail;
+        }
+    }
+
+    free(id_buf);
+    mdb_free_tabledef(table);
+    out->values = values;
+    out->count = count;
+    return 0;
+
+fail:
+    free(id_buf);
+    if (table) {
+        mdb_free_tabledef(table);
+    }
+    out->values = values;
+    out->count = count;
+    mdbgo_free_access_object_data_array_inner(out);
+    return -1;
+}
+
+void mdbgo_free_access_object_data_array(mdbgo_access_object_data_array_t *out) {
+    mdbgo_free_access_object_data_array_inner(out);
 }
 
 int mdbgo_list_access_object_ids(mdbgo_db_t *db, mdbgo_int_array_t *out, char *err, size_t err_len) {

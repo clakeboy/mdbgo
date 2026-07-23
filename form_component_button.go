@@ -1,6 +1,7 @@
 package mdbgo
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +63,13 @@ func parseJet4FormButtonProperties(data []byte, controls []FormControlInfo) map[
 	}
 
 	offsets := orderedFormControlOffsets(data, controls)
+	firstControlOffset := len(data)
+	for _, offset := range offsets {
+		if offset >= 0 && offset < firstControlOffset {
+			firstControlOffset = offset
+		}
+	}
+	defaultHeight := parseJet4ButtonDefaultHeight(data[:firstControlOffset])
 	type physicalButton struct {
 		offset int
 		name   string
@@ -104,6 +112,9 @@ func parseJet4FormButtonProperties(data []byte, controls []FormControlInfo) map[
 		if !ok {
 			continue
 		}
+		if !props.HasExplicitHeight {
+			props.Geometry.Height = defaultHeight
+		}
 		target := sort.Search(len(buttons), func(i int) bool {
 			return buttons[i].offset > block.offset
 		})
@@ -117,6 +128,67 @@ func parseJet4FormButtonProperties(data []byte, controls []FormControlInfo) map[
 		result[strings.ToLower(buttons[i].name)] = props
 	}
 	return result
+}
+
+// parseJet4ButtonDefaultHeight 读取命名控件区之前的窗体级 CommandButton 模板。
+// 模板同样以 FD 68 00 开始，但不带普通控件的 0x31 布局掩码；若模板省略
+// 0x63，则使用 Access 内建的 360-twip 默认高度。
+func parseJet4ButtonDefaultHeight(prefix []byte) int {
+	const builtInDefaultHeight = 360
+	signature := []byte{0xFD, 0x68, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		pos := recordPos + len(signature)
+		height := builtInDefaultHeight
+		hasHeight := false
+		isTemplate := false
+		for pos < len(prefix) && pos < recordPos+96 {
+			switch prefix[pos] {
+			case 0x31:
+				pos = len(prefix)
+			case 0x62, 0x63, 0x67, 0x68:
+				if pos+3 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if prefix[pos] == 0x63 {
+					height = int(le16(prefix[pos+1:]))
+					hasHeight = height > 0 && height <= 32767
+				}
+				pos += 3
+			case 0x9D:
+				if pos+5 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				pos += 5
+			case 0xE4:
+				if pos+2 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				byteLen := int(prefix[pos+1])
+				if byteLen >= 2 && byteLen%2 == 0 && pos+2+byteLen <= len(prefix) {
+					_, isTemplate = decodeJet4UTF16Text(prefix[pos+2 : pos+2+byteLen])
+				}
+				pos = len(prefix)
+			default:
+				pos = len(prefix)
+			}
+		}
+		if isTemplate {
+			if hasHeight {
+				return height
+			}
+			return builtInDefaultHeight
+		}
+		searchPos = recordPos + len(signature)
+	}
+	return builtInDefaultHeight
 }
 
 func parseJet4ButtonNumericTail(tail []byte) (jet4ButtonNumericProperties, bool) {

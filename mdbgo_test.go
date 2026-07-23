@@ -152,6 +152,63 @@ func TestTablesAndReadTable(t *testing.T) {
 	}
 }
 
+func TestTableRowCount(t *testing.T) {
+	dbPath := requireDBFile(t)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	tables, err := db.Tables()
+	if err != nil {
+		t.Fatalf("Tables failed: %v", err)
+	}
+	if len(tables) == 0 {
+		t.Fatal("Tables returned empty table list")
+	}
+
+	tableName := tables[0]
+	count, err := db.TableRowCount(tableName)
+	if err != nil {
+		t.Fatalf("TableRowCount(%q) failed: %v", tableName, err)
+	}
+	data, err := db.ReadTable(tableName)
+	if err != nil {
+		t.Fatalf("ReadTable(%q) failed: %v", tableName, err)
+	}
+	if want := uint64(len(data.Rows)); count != want {
+		t.Fatalf("TableRowCount(%q)=%d want=%d", tableName, count, want)
+	}
+}
+
+func TestTableRowCountValidation(t *testing.T) {
+	var nilDB *DB
+	if _, err := nilDB.TableRowCount("table"); err == nil {
+		t.Fatal("TableRowCount on nil DB expected error")
+	}
+
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+
+	if _, err := db.TableRowCount(""); err == nil {
+		t.Fatal("TableRowCount with empty name expected error")
+	}
+	if _, err := db.TableRowCount("__mdbgo_missing_table__"); err == nil {
+		t.Fatal("TableRowCount with missing table expected error")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if _, err := db.TableRowCount("table"); err == nil {
+		t.Fatal("TableRowCount on closed DB expected error")
+	}
+}
+
 func TestViewsAndViewSQL(t *testing.T) {
 	dbPath := requireDBFile(t)
 	db, err := Open(dbPath)
@@ -393,6 +450,45 @@ func TestExportForms(t *testing.T) {
 		t.Fatalf("ExportForms JSON marshal failed: %v", err)
 	}
 	fmt.Println(string(jsonb))
+}
+
+func TestExportForm(t *testing.T) {
+	dbPath := requireDBFile(t)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	formName := requireFormName(t, db)
+	form, err := db.ExportForm(strings.ToUpper(formName))
+	if err != nil {
+		t.Fatalf("ExportForm(%q) failed: %v", formName, err)
+	}
+	if form == nil {
+		t.Fatalf("ExportForm(%q) returned nil", formName)
+	}
+	if form.Name != formName {
+		t.Fatalf("ExportForm(%q) name=%q", formName, form.Name)
+	}
+}
+
+func TestExportFormRejectsInvalidName(t *testing.T) {
+	dbPath := requireDBFile(t)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.ExportForm("  "); err == nil || err.Error() != "form name is empty" {
+		t.Fatalf("ExportForm(empty) error=%v", err)
+	}
+	if _, err := db.ExportForm("__mdbgo_missing_form__"); err == nil || !strings.Contains(err.Error(), "form not found") {
+		t.Fatalf("ExportForm(missing) error=%v", err)
+	}
 }
 
 func TestReadFormStreams(t *testing.T) {
@@ -683,6 +779,49 @@ func TestReadFormContent(t *testing.T) {
 	t.Logf("form=%s storage=%d width=%d properties=%d controls=%d controls_with_props=%d controls_with_geometry=%d control_props=%d first=%+v",
 		content.FormName, content.StorageID, content.Width, len(content.Properties), len(content.Controls),
 		controlsWithProps, controlsWithGeometry, propertyCount, content.Controls[0])
+}
+
+func TestExportFormContent(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	formName := requireFormName(t, db)
+	content, err := db.ExportFormContent(formName)
+	if err != nil {
+		t.Fatalf("ExportFormContent(%q) failed: %v", formName, err)
+	}
+	if content == nil {
+		t.Fatalf("ExportFormContent(%q) returned nil", formName)
+	}
+	if content.FormName != formName {
+		t.Fatalf("ExportFormContent(%q) name=%q", formName, content.FormName)
+	}
+	if len(content.Controls) == 0 {
+		t.Fatalf("ExportFormContent(%q) returned no controls", formName)
+	}
+	if len(content.Sections) == 0 {
+		t.Fatalf("ExportFormContent(%q) returned no sections", formName)
+	}
+}
+
+func TestExportFormContentRejectsInvalidName(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.ExportFormContent("  "); err == nil || err.Error() != "form name is empty" {
+		t.Fatalf("ExportFormContent(empty) error=%v", err)
+	}
+	if _, err := db.ExportFormContent("__mdbgo_missing_form__"); err == nil || !strings.Contains(err.Error(), "form not found") {
+		t.Fatalf("ExportFormContent(missing) error=%v", err)
+	}
 }
 
 func TestReadFormContentFAbiaMaster(t *testing.T) {
@@ -1548,6 +1687,54 @@ func TestParseJet4ButtonNumericTail(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("Button numeric properties=%+v want=%+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseJet4ButtonDefaultHeight(t *testing.T) {
+	fontName := encodeUTF16LE("MS Sans Serif")
+	tests := []struct {
+		name   string
+		prefix []byte
+		want   int
+	}{
+		{
+			name: "form template height",
+			prefix: append([]byte{
+				0xFD, 0x68, 0x00,
+				0x63, 0xA4, 0x01,
+				0x67, 0x08, 0x00,
+				0x68, 0x90, 0x01,
+				0xE4, byte(len(fontName)),
+			}, fontName...),
+			want: 420,
+		},
+		{
+			name: "built-in template height",
+			prefix: append([]byte{
+				0xFD, 0x68, 0x00,
+				0x67, 0x08, 0x00,
+				0x68, 0x90, 0x01,
+				0x9D, 0x12, 0x00, 0x00, 0x80,
+				0xE4, byte(len(fontName)),
+			}, fontName...),
+			want: 360,
+		},
+		{
+			name: "ordinary button record is not template",
+			prefix: []byte{
+				0xFD, 0x68, 0x00, 0x31, 0xF7,
+				0x60, 0xE4, 0x0C, 0x61, 0xEC, 0x04, 0x62, 0x48, 0x03,
+				0x69, 0x06, 0x00, 0xDC, 0x10,
+			},
+			want: 360,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseJet4ButtonDefaultHeight(tt.prefix); got != tt.want {
+				t.Fatalf("parseJet4ButtonDefaultHeight()=%d want=%d", got, tt.want)
 			}
 		})
 	}
@@ -2560,6 +2747,7 @@ func TestFormPropertyIDToNameAgainstInterop(t *testing.T) {
 		136: "TextAlign",
 		132: "SourceObject",
 		141: "Top",
+		147: "DefaultView",
 		148: "Visible",
 		150: "Width",
 		152: "ScrollBars",
@@ -2575,6 +2763,44 @@ func TestFormPropertyIDToNameAgainstInterop(t *testing.T) {
 		if got := FormPropertyIDToName(id); got != want {
 			t.Errorf("FormPropertyIDToName(%d)=%q want=%q", id, got, want)
 		}
+	}
+}
+
+func TestParseJet4FormDefaultView(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want int
+		ok   bool
+	}{
+		{
+			name: "single form",
+			data: []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x06},
+			want: 0,
+			ok:   true,
+		},
+		{
+			name: "continuous forms",
+			data: []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x0F},
+			want: 1,
+			ok:   true,
+		},
+		{
+			name: "truncated header",
+			data: []byte{0x13, 0x00, 0x13},
+		},
+		{
+			name: "unknown template",
+			data: []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x20},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseJet4FormDefaultView(tt.data)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("parseJet4FormDefaultView()=(%d,%v) want=(%d,%v)", got, ok, tt.want, tt.ok)
+			}
+		})
 	}
 }
 
@@ -2670,6 +2896,26 @@ func TestOrderedFormControlOffsetsSkipsLongerControlNamePrefix(t *testing.T) {
 	})
 	if offsets[0] != wantOffset {
 		t.Fatalf("entry_seq_code offset=%d want=%d", offsets[0], wantOffset)
+	}
+}
+
+func TestOrderedFormControlOffsetsSkipsLongerControlNameSuffix(t *testing.T) {
+	appendTabPage := func(dst []byte, name, caption string) []byte {
+		dst = append(dst, encodeUTF16LE(name)...)
+		encoded := encodeUTF16LE(caption)
+		dst = append(dst, 0xE8, byte(len(encoded)))
+		return append(dst, encoded...)
+	}
+
+	data := appendTabPage(nil, "EventLog", "Event Log")
+	data = append(data, make([]byte, 24)...)
+	wantOffset := len(data)
+	data = appendTabPage(data, "Log", "Submit / Error Log")
+	offsets := orderedFormControlOffsets(data, []FormControlInfo{
+		{Name: "Log", Type: "TabPage", TypeCode: 0x217C},
+	})
+	if offsets[0] != wantOffset {
+		t.Fatalf("Log offset=%d want complete TabPage block at %d", offsets[0], wantOffset)
 	}
 }
 

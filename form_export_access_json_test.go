@@ -535,6 +535,7 @@ func (builder *accessRawJSONBuilder) buildForm(formName string) (*accessRawJSONF
 		Name:            content.FormName,
 		Title:           content.Caption,
 		Width:           content.Width,
+		View:            content.DefaultView,
 		Source:          content.RecordSource,
 		Height:          content.Height,
 		BackGroundColor: accessRawColorValue(content.BackColorValue),

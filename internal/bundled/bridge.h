@@ -15,6 +15,7 @@ typedef struct mdbgo_table_data {
     char **columns;
     size_t col_count;
     char **cells;
+    unsigned char *nulls;
     size_t row_count;
 } mdbgo_table_data_t;
 
@@ -83,6 +84,19 @@ typedef struct mdbgo_blob_data {
     size_t len;
 } mdbgo_blob_data_t;
 
+/* 一条 MSysAccessObjects.Data 记录。 */
+typedef struct mdbgo_access_object_data {
+    int object_id;
+    unsigned char *data;
+    size_t len;
+} mdbgo_access_object_data_t;
+
+/* MSysAccessObjects.Data 的批量读取结果。 */
+typedef struct mdbgo_access_object_data_array {
+    mdbgo_access_object_data_t *values;
+    size_t count;
+} mdbgo_access_object_data_array_t;
+
 /* int 数组结果。 */
 typedef struct mdbgo_int_array {
     int *values;
@@ -106,6 +120,9 @@ int mdbgo_get_view_sql(mdbgo_db_t *db, const char *view_name, char **out_sql, ch
 
 /* 按表名读取所有数据到内存。out 需用 mdbgo_free_table_data 释放。 */
 int mdbgo_read_table(mdbgo_db_t *db, const char *table_name, mdbgo_table_data_t *out, char *err, size_t err_len);
+
+/* 从表定义页读取记录数，不扫描数据行。 */
+int mdbgo_table_row_count(mdbgo_db_t *db, const char *table_name, size_t *out_count, char *err, size_t err_len);
 
 /* 执行 SQL 并返回结果集（当前支持返回行集的查询）。out 需用 mdbgo_free_table_data 释放。 */
 int mdbgo_query(mdbgo_db_t *db, const char *sql, mdbgo_table_data_t *out, char *err, size_t err_len);
@@ -142,6 +159,12 @@ int mdbgo_read_access_object_data_by_id(mdbgo_db_t *db, int object_id, mdbgo_blo
 
 /* 释放 mdbgo_read_access_object_data_by_id 返回的数据。 */
 void mdbgo_free_blob_data(mdbgo_blob_data_t *out);
+
+/* 单次顺序扫描读取 MSysAccessObjects 的全部 ID 和 Data。 */
+int mdbgo_read_access_object_data_all(mdbgo_db_t *db, mdbgo_access_object_data_array_t *out, char *err, size_t err_len);
+
+/* 释放 mdbgo_read_access_object_data_all 返回的数据。 */
+void mdbgo_free_access_object_data_array(mdbgo_access_object_data_array_t *out);
 
 /* 列出 MSysAccessObjects 的全部 ID。out 需用 mdbgo_free_int_array 释放。 */
 int mdbgo_list_access_object_ids(mdbgo_db_t *db, mdbgo_int_array_t *out, char *err, size_t err_len);
