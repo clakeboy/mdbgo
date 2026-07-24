@@ -369,6 +369,66 @@ func TestSchema(t *testing.T) {
 	fmt.Println(string(jsonb))
 }
 
+func TestSchemas(t *testing.T) {
+	dbPath := requireDBFile(t)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	tables, err := db.Tables()
+	if err != nil {
+		t.Fatalf("Tables failed: %v", err)
+	}
+	if len(tables) == 0 {
+		t.Fatal("Tables returned empty table list")
+	}
+
+	schemas, err := db.Schemas()
+	if err != nil {
+		t.Fatalf("Schemas failed: %v", err)
+	}
+	if len(schemas) != len(tables) {
+		t.Fatalf("Schemas returned %d tables, Tables returned %d", len(schemas), len(tables))
+	}
+	for i, schema := range schemas {
+		if schema == nil || schema.TableName != tables[i] {
+			t.Fatalf("Schemas[%d] table name mismatch", i)
+		}
+		if len(schema.Columns) == 0 {
+			t.Fatalf("Schemas[%d] returned zero columns for table %q", i, schema.TableName)
+		}
+		count, countErr := db.TableRowCount(schema.TableName)
+		if countErr != nil {
+			t.Fatalf("TableRowCount(%q) failed: %v", schema.TableName, countErr)
+		}
+		if schema.RowCount != count {
+			t.Fatalf("Schemas[%d].RowCount=%d want=%d", i, schema.RowCount, count)
+		}
+	}
+}
+
+func TestSchemasValidation(t *testing.T) {
+	var nilDB *DB
+	if _, err := nilDB.Schemas(); err == nil {
+		t.Fatal("Schemas on nil DB expected error")
+	}
+
+	dbPath := requireDBFile(t)
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if _, err := db.Schemas(); err == nil {
+		t.Fatal("Schemas on closed DB expected error")
+	}
+}
+
 func TestQuery(t *testing.T) {
 	dbPath := requireDBFile(t)
 

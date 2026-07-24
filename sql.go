@@ -47,6 +47,7 @@ type ColumnSchema struct {
 // TableSchema 描述一张表的元信息。
 type TableSchema struct {
 	TableName string
+	RowCount  uint64
 	Columns   []ColumnSchema
 }
 
@@ -267,7 +268,44 @@ func (db *DB) queryLegacy(sql string) (*TableData, error) {
 	return rawTableDataToGo(&raw)
 }
 
-// Schema 返回指定表的 schema 信息。
+// Schemas 一次读取并返回所有用户表的 schema 信息。
+func (db *DB) Schemas() ([]*TableSchema, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var raw C.mdbgo_table_schemas_t
+	rc := C.mdbgo_get_table_schemas(db.ptr, &raw, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
+	if rc != 0 {
+		return nil, errors.New(cStringFromBuf(errBuf))
+	}
+	defer C.mdbgo_free_table_schemas(&raw)
+
+	count := int(raw.count)
+	result := make([]*TableSchema, count)
+	if count > 0 {
+		rawSchemas := unsafe.Slice((*C.mdbgo_table_schema_t)(unsafe.Pointer(raw.schemas)), count)
+		for i := range rawSchemas {
+			result[i] = rawTableSchemaToGo(&rawSchemas[i])
+		}
+	}
+
+	db.metaMu.Lock()
+	db.tableCache = make([]string, 0, count)
+	db.tableLookup = make(map[string]string, count)
+	db.schemaCache = make(map[string]*TableSchema, count)
+	for _, schema := range result {
+		db.tableCache = append(db.tableCache, schema.TableName)
+		cacheKey := strings.ToLower(schema.TableName)
+		db.tableLookup[cacheKey] = schema.TableName
+		db.schemaCache[cacheKey] = cloneTableSchema(schema)
+	}
+	db.metaMu.Unlock()
+	return result, nil
+}
+
+// Schema 返回指定表的 schema 信息，包括表定义页中的记录数。
 func (db *DB) Schema(tableName string) (*TableSchema, error) {
 	if db == nil || db.ptr == nil {
 		return nil, errors.New("db is closed")
@@ -296,11 +334,22 @@ func (db *DB) Schema(tableName string) (*TableSchema, error) {
 	}
 	defer C.mdbgo_free_table_schema(&raw)
 
+	result := rawTableSchemaToGo(&raw)
+	db.metaMu.Lock()
+	if db.schemaCache == nil {
+		db.schemaCache = make(map[string]*TableSchema)
+	}
+	db.schemaCache[cacheKey] = cloneTableSchema(result)
+	db.metaMu.Unlock()
+	return result, nil
+}
+
+func rawTableSchemaToGo(raw *C.mdbgo_table_schema_t) *TableSchema {
 	colCount := int(raw.col_count)
 	cols := make([]ColumnSchema, colCount)
 	if colCount > 0 {
 		cCols := unsafe.Slice((*C.mdbgo_column_schema_t)(unsafe.Pointer(raw.columns)), colCount)
-		for i := 0; i < colCount; i++ {
+		for i := range cCols {
 			cols[i] = ColumnSchema{
 				Name:     C.GoString(cCols[i].name),
 				ColType:  int(cCols[i].col_type),
@@ -312,18 +361,11 @@ func (db *DB) Schema(tableName string) (*TableSchema, error) {
 			}
 		}
 	}
-
-	result := &TableSchema{
+	return &TableSchema{
 		TableName: C.GoString(raw.table_name),
+		RowCount:  uint64(raw.row_count),
 		Columns:   cols,
 	}
-	db.metaMu.Lock()
-	if db.schemaCache == nil {
-		db.schemaCache = make(map[string]*TableSchema)
-	}
-	db.schemaCache[cacheKey] = cloneTableSchema(result)
-	db.metaMu.Unlock()
-	return result, nil
 }
 
 func cloneTableSchema(schema *TableSchema) *TableSchema {
@@ -332,6 +374,7 @@ func cloneTableSchema(schema *TableSchema) *TableSchema {
 	}
 	return &TableSchema{
 		TableName: schema.TableName,
+		RowCount:  schema.RowCount,
 		Columns:   append([]ColumnSchema(nil), schema.Columns...),
 	}
 }

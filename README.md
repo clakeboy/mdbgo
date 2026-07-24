@@ -128,6 +128,7 @@ func main() {
 - `(*DB).QueryPageContext(ctx, sql, params, PageRequest) (*PageResult, error)`：带数据库与查询指纹校验的游标分页；单表可推导默认顺序，复杂查询要求显式 `ORDER BY`
 - `(*DB).PreparePagerContext(ctx, sql, params, pageSize) (*Pager, error)`：物化到临时 spool，支持稳定的任意页读取
 - `(*DB).Schema(tableName string) (*TableSchema, error)`
+- `(*DB).Schemas() ([]*TableSchema, error)`：一次目录扫描读取所有用户表 schema；每项同时包含表定义页中的 `RowCount`
 - `(*DB).ExportForms() ([]FormInfo, error)`：导出 Access Form 窗体和组件属性
 - `(*DB).ExportForm(formName string) (*FormInfo, error)`：按名称导出单个 Access Form 窗体和组件属性（名称不区分大小写）
 - `(*DB).ReadAccessObjectContainer() (*AccessObjectContainer, error)`：重组 `MSysAccessObjects.Data` 中的内部 OLE Compound 容器

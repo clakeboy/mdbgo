@@ -821,28 +821,20 @@ fail:
     return -1;
 }
 
-int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_schema_t *out, char *err, size_t err_len) {
-    MdbTableDef *table;
+static int mdbgo_copy_table_schema(MdbTableDef *table, const char *table_name, mdbgo_table_schema_t *out, char *err, size_t err_len) {
     mdbgo_column_schema_t *cols = NULL;
     size_t i;
     size_t col_count;
 
-    if (!db || !db->mdb || !table_name || !out) {
+    if (!table || !table_name || !out) {
         mdbgo_set_error(err, err_len, "invalid arguments");
         return -1;
     }
 
     memset(out, 0, sizeof(*out));
 
-    table = mdb_read_table_by_name(db->mdb, (gchar *)table_name, MDB_TABLE);
-    if (!table) {
-        mdbgo_set_error(err, err_len, "table not found: %s", table_name);
-        return -1;
-    }
-
     if (!mdb_read_columns(table)) {
         mdbgo_set_error(err, err_len, "failed to read columns: %s", table_name);
-        mdb_free_tabledef(table);
         return -1;
     }
 
@@ -850,7 +842,6 @@ int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_s
     cols = (mdbgo_column_schema_t *)calloc(col_count, sizeof(mdbgo_column_schema_t));
     if (!cols && col_count > 0) {
         mdbgo_set_error(err, err_len, "out of memory");
-        mdb_free_tabledef(table);
         return -1;
     }
 
@@ -858,9 +849,12 @@ int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_s
     if (!out->table_name) {
         mdbgo_set_error(err, err_len, "out of memory");
         free(cols);
-        mdb_free_tabledef(table);
         return -1;
     }
+
+    out->columns = cols;
+    out->col_count = col_count;
+    out->row_count = table->num_rows;
 
     for (i = 0; i < col_count; i++) {
         MdbColumn *col = g_ptr_array_index(table->columns, (guint)i);
@@ -874,9 +868,6 @@ int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_s
         cols[i].col_type_name = strdup(type_name);
         if (!cols[i].name || !cols[i].col_type_name) {
             mdbgo_set_error(err, err_len, "out of memory");
-            out->columns = cols;
-            out->col_count = col_count;
-            mdb_free_tabledef(table);
             mdbgo_free_table_schema(out);
             return -1;
         }
@@ -888,11 +879,27 @@ int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_s
         cols[i].is_fixed = col ? col->is_fixed : 0;
     }
 
-    out->columns = cols;
-    out->col_count = col_count;
-
-    mdb_free_tabledef(table);
     return 0;
+}
+
+int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_schema_t *out, char *err, size_t err_len) {
+    MdbTableDef *table;
+    int rc;
+
+    if (!db || !db->mdb || !table_name || !out) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+
+    table = mdb_read_table_by_name(db->mdb, (gchar *)table_name, MDB_TABLE);
+    if (!table) {
+        mdbgo_set_error(err, err_len, "table not found: %s", table_name);
+        return -1;
+    }
+
+    rc = mdbgo_copy_table_schema(table, table_name, out, err, err_len);
+    mdb_free_tabledef(table);
+    return rc;
 }
 
 void mdbgo_free_table_schema(mdbgo_table_schema_t *schema) {
@@ -915,6 +922,79 @@ void mdbgo_free_table_schema(mdbgo_table_schema_t *schema) {
 
     schema->columns = NULL;
     schema->col_count = 0;
+    schema->row_count = 0;
+}
+
+int mdbgo_get_table_schemas(mdbgo_db_t *db, mdbgo_table_schemas_t *out, char *err, size_t err_len) {
+    GPtrArray *catalog;
+    mdbgo_table_schema_t *schemas;
+    size_t count = 0;
+    guint i;
+
+    if (!db || !db->mdb || !out) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    catalog = mdb_read_catalog(db->mdb, MDB_TABLE);
+    if (!catalog) {
+        mdbgo_set_error(err, err_len, "failed to read catalog");
+        return -1;
+    }
+
+    schemas = (mdbgo_table_schema_t *)calloc((size_t)catalog->len, sizeof(mdbgo_table_schema_t));
+    if (!schemas && catalog->len > 0) {
+        mdbgo_set_error(err, err_len, "out of memory");
+        return -1;
+    }
+
+    for (i = 0; i < catalog->len; i++) {
+        MdbCatalogEntry *entry = g_ptr_array_index(catalog, i);
+        MdbTableDef *table;
+
+        if (!entry || !mdb_is_user_table(entry)) {
+            continue;
+        }
+
+        table = mdb_read_table(entry);
+        if (!table) {
+            mdbgo_set_error(err, err_len, "failed to read table: %s", entry->object_name);
+            goto fail;
+        }
+        if (mdbgo_copy_table_schema(table, entry->object_name, &schemas[count], err, err_len) != 0) {
+            mdb_free_tabledef(table);
+            goto fail;
+        }
+        mdb_free_tabledef(table);
+        count++;
+    }
+
+    out->schemas = schemas;
+    out->count = count;
+    return 0;
+
+fail:
+    for (i = 0; i < count; i++) {
+        mdbgo_free_table_schema(&schemas[i]);
+    }
+    free(schemas);
+    return -1;
+}
+
+void mdbgo_free_table_schemas(mdbgo_table_schemas_t *schemas) {
+    size_t i;
+
+    if (!schemas) {
+        return;
+    }
+
+    for (i = 0; i < schemas->count; i++) {
+        mdbgo_free_table_schema(&schemas->schemas[i]);
+    }
+    free(schemas->schemas);
+    schemas->schemas = NULL;
+    schemas->count = 0;
 }
 
 int mdbgo_read_form_streams(mdbgo_db_t *db, const char *form_name, mdbgo_form_streams_t *out, char *err, size_t err_len) {

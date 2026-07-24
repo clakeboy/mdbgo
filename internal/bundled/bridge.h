@@ -35,7 +35,14 @@ typedef struct mdbgo_table_schema {
     char *table_name;
     mdbgo_column_schema_t *columns;
     size_t col_count;
+    size_t row_count;
 } mdbgo_table_schema_t;
+
+/* 多张表的 schema 信息。 */
+typedef struct mdbgo_table_schemas {
+    mdbgo_table_schema_t *schemas;
+    size_t count;
+} mdbgo_table_schemas_t;
 
 /* 简单键值对，表示对象属性。 */
 typedef struct mdbgo_property_item {
@@ -141,6 +148,12 @@ int mdbgo_get_table_schema(mdbgo_db_t *db, const char *table_name, mdbgo_table_s
 
 /* 释放 mdbgo_get_table_schema 返回的数据。 */
 void mdbgo_free_table_schema(mdbgo_table_schema_t *schema);
+
+/* 批量读取所有用户表 schema。out 需用 mdbgo_free_table_schemas 释放。 */
+int mdbgo_get_table_schemas(mdbgo_db_t *db, mdbgo_table_schemas_t *out, char *err, size_t err_len);
+
+/* 释放 mdbgo_get_table_schemas 返回的数据。 */
+void mdbgo_free_table_schemas(mdbgo_table_schemas_t *schemas);
 
 /* 导出 Access 窗体和组件信息。out 需用 mdbgo_free_forms_data 释放。 */
 int mdbgo_export_forms(mdbgo_db_t *db, mdbgo_forms_data_t *out, char *err, size_t err_len);
