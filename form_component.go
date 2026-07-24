@@ -976,6 +976,10 @@ func jet4TaggedTextFieldsControlTypeScore(controlType string, fields []jet4Tagge
 	}
 	score := 0
 	for _, field := range fields {
+		if field.Tag == 0xC1 && field.Value == jet4ExpandedControlAnchor {
+			score += 100
+			continue
+		}
 		switch controlType {
 		case "TextBox":
 			// TextBox 名称可能与 Label.Caption 相同。真正的 TextBox 块至少

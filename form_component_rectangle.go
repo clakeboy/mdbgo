@@ -1,10 +1,13 @@
 package mdbgo
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+const jet4RectangleBuiltInDefaultHeight = 720
 
 type jet4RectangleNumericProperties struct {
 	SpecialEffect    byte
@@ -75,10 +78,15 @@ func parseJet4FormRectangleProperties(data []byte, controls []FormControlInfo) m
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
+	prefixEnd := len(data)
+	if len(blocks) > 0 {
+		prefixEnd = blocks[0].offset
+	}
+	defaultHeight := parseJet4RectangleDefaultHeight(data[:prefixEnd])
 	numericRecords := make([]jet4RectangleNumericProperties, 0, len(rectangles))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4RectangleNumericTail(tail)
+		props, ok := parseJet4RectangleNumericTailWithDefaultHeight(tail, defaultHeight)
 		if ok {
 			numericRecords = append(numericRecords, props)
 		}
@@ -89,7 +97,70 @@ func parseJet4FormRectangleProperties(data []byte, controls []FormControlInfo) m
 	return result
 }
 
+// parseJet4RectangleDefaultHeight 读取命名控件区之前的窗体级 Rectangle 模板。
+// 模板以 FD 65 00 开始；若模板省略 0x63 Height，则使用 Access 内建的
+// 720-twip 默认高度。
+func parseJet4RectangleDefaultHeight(prefix []byte) int {
+	signature := []byte{0xFD, 0x65, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		pos := recordPos + len(signature)
+		height := jet4RectangleBuiltInDefaultHeight
+		isTemplate := false
+		for pos < len(prefix) && pos < recordPos+96 {
+			tag := prefix[pos]
+			switch tag {
+			case 0x31, 0x32, 0x33, 0x34:
+				if pos+2 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if tag == 0x31 {
+					isTemplate = true
+				}
+				pos += 2
+			case 0x60, 0x61, 0x62, 0x63:
+				if pos+3 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if tag == 0x63 {
+					value := int(le16(prefix[pos+1:]))
+					if value > 0 && value <= 32767 {
+						height = value
+					}
+				}
+				pos += 3
+			case 0x9C, 0x9D:
+				if pos+5 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				pos += 5
+			default:
+				pos = len(prefix)
+			}
+		}
+		if isTemplate {
+			return height
+		}
+		searchPos = recordPos + len(signature)
+	}
+	return jet4RectangleBuiltInDefaultHeight
+}
+
 func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties, bool) {
+	return parseJet4RectangleNumericTailWithDefaultHeight(tail, jet4RectangleBuiltInDefaultHeight)
+}
+
+func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight int) (jet4RectangleNumericProperties, bool) {
+	if defaultHeight <= 0 || defaultHeight > 32767 {
+		defaultHeight = jet4RectangleBuiltInDefaultHeight
+	}
 	result := jet4RectangleNumericProperties{
 		BorderStyle:    1,
 		BorderWidth:    1,
@@ -97,6 +168,8 @@ func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties,
 		BackColor:      accessColorHex(0x00FFFFFF),
 		BackColorValue: 0x00FFFFFF,
 		BorderColor:    accessColorHex(0),
+		// Jet4 omits Height when it equals the form's Rectangle template.
+		Geometry: formControlGeometry{Height: defaultHeight},
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -124,7 +197,6 @@ func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties,
 	}
 
 	foundWidth := false
-	foundHeight := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -159,7 +231,6 @@ func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties,
 				foundWidth = true
 			case 0x63:
 				result.Geometry.Height = value
-				foundHeight = true
 			}
 			pos += 3
 		case 0x9C, 0x9D:
@@ -179,7 +250,7 @@ func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties,
 			pos++
 		}
 	}
-	if !foundWidth || !foundHeight || result.BackStyle > 1 || result.BorderStyle > 1 ||
+	if !foundWidth || result.BackStyle > 1 || result.BorderStyle > 1 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||
 		result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {

@@ -36,6 +36,9 @@ func main() {
     }
     defer db.Close()
 
+    fmt.Printf("format=%s engine=%s pageSize=%d objectStorage=%s\n",
+        db.Format.Name, db.Format.Engine, db.Format.PageSize, db.Format.ObjectStorage)
+
     tables, err := db.Tables()
     if err != nil {
         log.Fatal(err)
@@ -117,6 +120,7 @@ func main() {
 - `Open(path string) (*DB, error)`
 - `OpenWithOptions(path string, OpenOptions) (*DB, error)`：可通过 `MaxConcurrentQueries` 设置同一 DB 的最大并发查询数
 - `(*DB).Close() error`
+- `DB.Format DatabaseFormat`：当前打开文件的格式信息，包括 `Name/Engine/Version/PageSize/ObjectStorage`
 - `(*DB).Tables() ([]string, error)`
 - `(*DB).Views() ([]string, error)`：列出 Access 保存查询，与原版 `mdb-queries` 一样包含 `~sq_` 内部查询
 - `(*DB).ViewSQL(viewName string) (string, error)`：从 `MSysQueries` 还原 SELECT View SQL，支持参数、别名、INNER/LEFT/RIGHT JOIN、WHERE、GROUP BY、HAVING、多字段排序、外部数据库和 `WITH OWNERACCESS OPTION`
@@ -190,8 +194,8 @@ MDBGO_EXPORT_FORM_NAME=f_abia_master \
 go test -run TestExportFormAsAccessJSON -v -count=1
 
 MDBGO_TEST_DB=testdb/mdbs/dms-0723.mdb \
-MDBGO_EXPORT_FORM_NAME=f_abi_entry \
-MDBGO_EXPORT_FORM_OUTPUT=testdb/f_abi_entry_mdbgo.json \
+MDBGO_EXPORT_FORM_NAME=f_cvm \
+MDBGO_EXPORT_FORM_OUTPUT=testdb/f_cvm_mdbgo.json \
 go test -run TestExportFormAsAccessJSON -v -count=1
 ```
 

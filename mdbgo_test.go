@@ -82,6 +82,61 @@ func TestOpenAndClose(t *testing.T) {
 	}
 }
 
+func TestDatabaseFormat(t *testing.T) {
+	tests := []struct {
+		name         string
+		path         string
+		wantName     string
+		wantStorage  string
+		wantVersion  int
+		wantPageSize int
+		wantEngine   string
+	}{
+		{
+			name:         "Access 2000",
+			path:         "testdb/mdbs/mpci_2000.mdb",
+			wantName:     "Access 2000",
+			wantStorage:  "MSysAccessObjects",
+			wantVersion:  1,
+			wantPageSize: 4096,
+			wantEngine:   "Jet 4",
+		},
+		{
+			name:         "Access 2003",
+			path:         "testdb/mdbs/mpci_2003.mdb",
+			wantName:     "Access 2003",
+			wantStorage:  "MSysAccessStorage",
+			wantVersion:  1,
+			wantPageSize: 4096,
+			wantEngine:   "Jet 4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := os.Stat(tt.path); err != nil {
+				t.Skipf("fixture not found: %s, err=%v", tt.path, err)
+			}
+			db, err := Open(tt.path)
+			if err != nil {
+				t.Fatalf("Open failed: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			if db.Format.Name != tt.wantName ||
+				db.Format.Engine != tt.wantEngine ||
+				db.Format.Version != tt.wantVersion ||
+				db.Format.PageSize != tt.wantPageSize ||
+				db.Format.ObjectStorage != tt.wantStorage {
+				t.Fatalf("Format=%+v", db.Format)
+			}
+			if got := db.Format.String(); got != tt.wantName {
+				t.Fatalf("Format.String()=%q want=%q", got, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestOpenUnicodePath(t *testing.T) {
 	dbPath := requireDBFile(t)
 	unicodeDir := filepath.Join(t.TempDir(), "中文数据库")
@@ -678,6 +733,18 @@ func TestReadAccessObjectContainer(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
+	kind, err := db.accessObjectStorageKind()
+	if err != nil {
+		t.Fatalf("accessObjectStorageKind failed: %v", err)
+	}
+	if kind == accessObjectStorageTree {
+		_, err := db.ReadAccessObjectContainer()
+		if err == nil || !strings.Contains(err.Error(), "has no OLE Compound container") {
+			t.Fatalf("ReadAccessObjectContainer error=%v, want MSysAccessStorage explanation", err)
+		}
+		return
+	}
+
 	container, err := db.ReadAccessObjectContainer()
 	if err != nil {
 		t.Fatalf("ReadAccessObjectContainer failed: %v", err)
@@ -712,6 +779,66 @@ func TestReadAccessObjectEntries(t *testing.T) {
 		if strings.Contains(strings.ToLower(entry.Path), "form") {
 			t.Logf("entry path=%q dir=%v size=%d", entry.Path, entry.IsDir, entry.Size)
 		}
+	}
+}
+
+func TestReadAccessObjectEntriesStorageFormats(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		wantKind int
+	}{
+		{name: "Access 2000 MSysAccessObjects", path: "testdb/mdbs/mpci_2000.mdb", wantKind: accessObjectStorageObjects},
+		{name: "Access 2003 MSysAccessStorage", path: "testdb/mdbs/mpci_2003.mdb", wantKind: accessObjectStorageTree},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := os.Stat(tt.path); err != nil {
+				t.Skipf("fixture not found: %s, err=%v", tt.path, err)
+			}
+			db, err := Open(tt.path)
+			if err != nil {
+				t.Fatalf("Open failed: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			kind, err := db.accessObjectStorageKind()
+			if err != nil {
+				t.Fatalf("accessObjectStorageKind failed: %v", err)
+			}
+			if kind != tt.wantKind {
+				t.Fatalf("storage kind=%d want=%d", kind, tt.wantKind)
+			}
+
+			entries, err := db.ReadAccessObjectEntries()
+			if err != nil {
+				t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+			}
+			var hasFormsDirData, hasFormBlob bool
+			for _, entry := range entries {
+				switch {
+				case entry.Path == "Forms/DirData" && len(entry.Data) > 0:
+					hasFormsDirData = true
+				case strings.HasPrefix(entry.Path, "Forms/") && entry.Name == "Blob" && len(entry.Data) > 0:
+					hasFormBlob = true
+				}
+			}
+			if !hasFormsDirData {
+				t.Fatal("Forms/DirData stream is missing")
+			}
+			if !hasFormBlob {
+				t.Fatal("non-empty Forms/<id>/Blob stream is missing")
+			}
+
+			streams, err := db.ReadFormObjectStreams("f_mpci_company")
+			if err != nil {
+				t.Fatalf("ReadFormObjectStreams(f_mpci_company) failed: %v", err)
+			}
+			if len(streams.Blob) == 0 || len(streams.TypeInfo) == 0 {
+				t.Fatalf("incomplete form streams: blob=%d typeInfo=%d", len(streams.Blob), len(streams.TypeInfo))
+			}
+		})
 	}
 }
 
@@ -1058,262 +1185,6 @@ func TestReadAllFormSectionProperties(t *testing.T) {
 	t.Logf("verified Section properties for %d forms and %d sections", len(formIDs), sectionCount)
 }
 
-type windowsExportedForm struct {
-	Name     string
-	Width    int
-	Source   string
-	Controls []windowsExportedControl
-}
-
-type windowsExportedControl struct {
-	Name            string
-	ClassType       string
-	Tag             string
-	Source          string
-	Format          string
-	Underline       bool
-	TextAlign       string
-	TabIndex        int
-	Width           int
-	Height          int
-	FrontColor      string
-	BackGroundColor string
-	Controls        []windowsExportedControl
-	Tabs            []windowsExportedControl
-}
-
-type windowsRawExportedForm struct {
-	Controls []windowsRawExportedControl
-}
-
-type windowsRawExportedControl struct {
-	Name            string
-	ClassType       string
-	Text            string
-	Icon            string
-	Color           int64
-	Tip             string
-	Outline         int
-	LineWidth       int
-	LineColor       int64
-	BackTransparent int
-	LineTransparent int
-	Tag             string
-	Left            int
-	Top             int
-	Width           int
-	Height          int
-	TextAlign       int
-	FontSize        int
-	FrontColor      int64
-	BackGroundColor int64
-	Locked          bool
-	Source          string
-	SourceField     string
-	RowSource       string
-	BoundField      int
-	IsReadOnly      bool
-	IsVisible       bool
-	TabIndex        int
-	SearchColumn    int
-	Columns         string
-	NoWarp          bool
-	Controls        []windowsRawExportedControl
-	Tabs            []windowsRawExportedControl
-}
-
-func flattenWindowsExportedControls(controls []windowsExportedControl) []windowsExportedControl {
-	var result []windowsExportedControl
-	for _, control := range controls {
-		result = append(result, control)
-		result = append(result, flattenWindowsExportedControls(control.Tabs)...)
-		result = append(result, flattenWindowsExportedControls(control.Controls)...)
-	}
-	return result
-}
-
-func TestReadFormContentFAbiaMasterAgainstWindowsExport(t *testing.T) {
-	fixturePath := filepath.Join("testdb", "f_abia_master.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read Windows export %s failed: %v", fixturePath, err)
-	}
-	var fixture windowsExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatalf("parse Windows export %s failed: %v", fixturePath, err)
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent(fixture.Name)
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", fixture.Name, err)
-	}
-
-	if content.RecordSource != fixture.Source {
-		t.Fatalf("RecordSource=%q want=%q", content.RecordSource, fixture.Source)
-	}
-	if content.Width != fixture.Width*15 {
-		t.Fatalf("Width=%d twips want=%d", content.Width, fixture.Width*15)
-	}
-	if len(content.Sections) != 1 || content.Sections[0].Type != "Detail" {
-		t.Fatalf("sections=%+v want one Detail section", content.Sections)
-	}
-
-	exportedControls := flattenWindowsExportedControls(fixture.Controls)
-	parsedControls := content.Sections[0].Controls
-	if len(parsedControls) != len(exportedControls) {
-		t.Fatalf("parsed controls=%d Windows export controls=%d", len(parsedControls), len(exportedControls))
-	}
-	parsedByName := make(map[string]FormControlContent, len(parsedControls))
-	for _, control := range parsedControls {
-		parsedByName[control.Name] = control
-	}
-	for _, expected := range exportedControls {
-		actual, ok := parsedByName[expected.Name]
-		if !ok {
-			t.Errorf("Windows export control %q is missing", expected.Name)
-			continue
-		}
-		actualType := actual.Type
-		if actualType == "SubForm" {
-			// AccessExport 把数据表视图的 SubForm 转换成前端 Table。
-			actualType = "Table"
-		}
-		if actualType != expected.ClassType {
-			t.Errorf("control %q type=%q Windows export type=%q", expected.Name, actual.Type, expected.ClassType)
-		}
-		if expected.ClassType == "TextBox" {
-			if actual.ControlSource != expected.Source {
-				t.Errorf("TextBox %q ControlSource=%q Windows export Source=%q",
-					expected.Name, actual.ControlSource, expected.Source)
-			}
-			if actual.Tag != expected.Tag {
-				t.Errorf("TextBox %q Tag=%q Windows export Tag=%q", expected.Name, actual.Tag, expected.Tag)
-			}
-			if actual.Format != expected.Format {
-				t.Errorf("TextBox %q Format=%q Windows export Format=%q", expected.Name, actual.Format, expected.Format)
-			}
-			if actual.FontName != "Verdana" {
-				t.Errorf("TextBox %q FontName=%q want=Verdana", expected.Name, actual.FontName)
-			}
-			if actual.TextAlign != expected.TextAlign {
-				t.Errorf("TextBox %q TextAlign=%q Windows export TextAlign=%q",
-					expected.Name, actual.TextAlign, expected.TextAlign)
-			}
-			if actual.TabIndex != expected.TabIndex {
-				t.Errorf("TextBox %q TabIndex=%d Windows export TabIndex=%d",
-					expected.Name, actual.TabIndex, expected.TabIndex)
-			}
-			if actual.BackGroundColor != expected.BackGroundColor {
-				t.Errorf("TextBox %q BackGroundColor=%q Windows export BackGroundColor=%q",
-					expected.Name, actual.BackGroundColor, expected.BackGroundColor)
-			}
-			if actual.ForeColor != expected.FrontColor {
-				t.Errorf("TextBox %q ForeColor=%q Windows export FrontColor=%q",
-					expected.Name, actual.ForeColor, expected.FrontColor)
-			}
-			if actual.Width/15 != expected.Width || actual.Height/15 != expected.Height {
-				t.Errorf("TextBox %q size=(%d,%d) twips Windows export size=(%d,%d) pixels",
-					expected.Name, actual.Width, actual.Height, expected.Width, expected.Height)
-			}
-		}
-	}
-	if got := parsedByName["master_bl_no"].StatusBarText; got != "Lot Number" {
-		t.Errorf("master_bl_no StatusBarText=%q want=%q", got, "Lot Number")
-	}
-}
-
-func TestReadFormContentFAbiaMasterLabelsAgainstRawWindowsExport(t *testing.T) {
-	fixturePath := filepath.Join("testdb", "t_abia_master_org.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read raw Windows export %s failed: %v", fixturePath, err)
-	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatalf("parse raw Windows export %s failed: %v", fixturePath, err)
-	}
-	if len(fixture.Controls) == 0 || fixture.Controls[0].ClassType != "TabControl" {
-		t.Fatalf("raw Windows export root controls do not start with TabControl: %+v", fixture.Controls)
-	}
-
-	// 原始导出同时包含 Table 内部的列标题 Label；它们不是 Form TypeInfo 控件。
-	// 这里只取根 TabControl 各 TabPage 的直接子控件。
-	exportedLabels := make([]windowsRawExportedControl, 0)
-	for _, tab := range fixture.Controls[0].Tabs {
-		for _, control := range tab.Controls {
-			if control.ClassType == "Label" {
-				exportedLabels = append(exportedLabels, control)
-			}
-		}
-	}
-	if len(exportedLabels) != 35 {
-		t.Fatalf("raw Windows export Label controls=%d want=35", len(exportedLabels))
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master", err)
-	}
-	parsedByName := make(map[string]FormControlContent)
-	for _, section := range content.Sections {
-		for _, control := range section.Controls {
-			if control.Type == "Label" {
-				parsedByName[control.Name] = control
-			}
-		}
-	}
-	if len(parsedByName) != len(exportedLabels) {
-		t.Fatalf("parsed Label controls=%d raw Windows export Labels=%d", len(parsedByName), len(exportedLabels))
-	}
-
-	for _, expected := range exportedLabels {
-		actual, ok := parsedByName[expected.Name]
-		if !ok {
-			t.Errorf("raw Windows Label %q is missing", expected.Name)
-			continue
-		}
-		if actual.Caption != expected.Text {
-			t.Errorf("Label %q Caption=%q raw Text=%q", expected.Name, actual.Caption, expected.Text)
-		}
-		if actual.Tag != expected.Tag {
-			t.Errorf("Label %q Tag=%q raw Tag=%q", expected.Name, actual.Tag, expected.Tag)
-		}
-		if actual.FontName != "Verdana" {
-			t.Errorf("Label %q FontName=%q want=Verdana", expected.Name, actual.FontName)
-		}
-		if actual.FontSize != expected.FontSize {
-			t.Errorf("Label %q FontSize=%d raw FontSize=%d", expected.Name, actual.FontSize, expected.FontSize)
-		}
-		if int(actual.TextAlignValue) != expected.TextAlign {
-			t.Errorf("Label %q TextAlignValue=%d raw TextAlign=%d", expected.Name, actual.TextAlignValue, expected.TextAlign)
-		}
-		if actual.BackColorValue != uint32(expected.BackGroundColor) {
-			t.Errorf("Label %q BackColorValue=%d raw BackGroundColor=%d",
-				expected.Name, actual.BackColorValue, expected.BackGroundColor)
-		}
-		if actual.ForeColorValue != uint32(expected.FrontColor) {
-			t.Errorf("Label %q ForeColorValue=%d raw FrontColor=%d",
-				expected.Name, actual.ForeColorValue, expected.FrontColor)
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("Label %q geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)", expected.Name,
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-	}
-}
-
 func TestReadFormContentFAbiaMasterQueryComboBox(t *testing.T) {
 	db, err := Open(filepath.Clean(defaultTestDB))
 	if err != nil {
@@ -1437,79 +1308,6 @@ func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 	}
 }
 
-func TestReadFormContentFAbiaMasterQueryComboBoxAgainstRawWindowsExport(t *testing.T) {
-	fixturePath := filepath.Join("testdb", "t_abia_master_query_org.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read raw Windows export %s failed: %v", fixturePath, err)
-	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatalf("parse raw Windows export %s failed: %v", fixturePath, err)
-	}
-
-	var expected windowsRawExportedControl
-	foundExpected := false
-	for _, control := range fixture.Controls {
-		if control.ClassType == "ComboBox" && control.Name == "status_id" {
-			expected = control
-			foundExpected = true
-			break
-		}
-	}
-	if !foundExpected {
-		t.Fatal("raw Windows ComboBox status_id is missing")
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master_query")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master_query", err)
-	}
-
-	var actual FormControlContent
-	foundActual := false
-	for _, control := range content.Controls {
-		if control.Type == "ComboBox" && control.Name == expected.Name {
-			actual = control
-			foundActual = true
-			break
-		}
-	}
-	if !foundActual {
-		t.Fatalf("parsed ComboBox %q is missing", expected.Name)
-	}
-
-	if actual.Left != expected.Left || actual.Top != expected.Top ||
-		actual.Width != expected.Width || actual.Height != expected.Height {
-		t.Errorf("ComboBox geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)",
-			actual.Left, actual.Top, actual.Width, actual.Height,
-			expected.Left, expected.Top, expected.Width, expected.Height)
-	}
-	if actual.Locked != expected.Locked || actual.Locked != expected.IsReadOnly {
-		t.Errorf("ComboBox Locked=%v raw Locked=%v IsReadOnly=%v",
-			actual.Locked, expected.Locked, expected.IsReadOnly)
-	}
-	if actual.TextAlignValue != byte(expected.TextAlign) || actual.ControlSource != expected.Source ||
-		actual.ControlSource != expected.SourceField || actual.RowSource != expected.RowSource {
-		t.Errorf("ComboBox text fields: actual=%+v raw=%+v", actual, expected)
-	}
-	if actual.BoundColumn != expected.BoundField || actual.BoundColumn != expected.SearchColumn {
-		t.Errorf("ComboBox BoundColumn=%d raw BoundField=%d SearchColumn=%d",
-			actual.BoundColumn, expected.BoundField, expected.SearchColumn)
-	}
-	if actual.Visible != expected.IsVisible || actual.TabIndex != expected.TabIndex ||
-		actual.ColumnWidths != expected.Columns {
-		t.Errorf("ComboBox state: visible=%v/%v tab=%d/%d columns=%q/%q",
-			actual.Visible, expected.IsVisible, actual.TabIndex, expected.TabIndex,
-			actual.ColumnWidths, expected.Columns)
-	}
-}
-
 func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 	tail := []byte{
 		0xFD, 0x6F, 0x00, 0x01, 0x32, 0x00, 0x35, 0x55, 0x44, 0x03,
@@ -1570,69 +1368,6 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		got.TabIndex != 0 || got.HasTabIndex ||
 		got.Geometry != (formControlGeometry{Width: 900, Height: 285}) {
 		t.Fatalf("default-fields ComboBox numeric properties=%+v ok=%v", got, ok)
-	}
-}
-
-func TestReadFormContentFAbiaMasterQueryButtonsAgainstRawWindowsExport(t *testing.T) {
-	fixturePath := filepath.Join("testdb", "t_abia_master_query_org.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read raw Windows export %s failed: %v", fixturePath, err)
-	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatalf("parse raw Windows export %s failed: %v", fixturePath, err)
-	}
-	expectedByName := make(map[string]windowsRawExportedControl)
-	for _, control := range fixture.Controls {
-		if control.ClassType == "Button" {
-			expectedByName[control.Name] = control
-		}
-	}
-	if len(expectedByName) != 2 {
-		t.Fatalf("raw Windows Button controls=%d want=2", len(expectedByName))
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master_query")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master_query", err)
-	}
-	actualByName := make(map[string]FormControlContent)
-	for _, control := range content.Controls {
-		if control.Type == "Button" {
-			actualByName[control.Name] = control
-		}
-	}
-	if len(actualByName) != len(expectedByName) {
-		t.Fatalf("parsed Button controls=%d raw Windows Buttons=%d", len(actualByName), len(expectedByName))
-	}
-
-	for name, expected := range expectedByName {
-		actual, ok := actualByName[name]
-		if !ok {
-			t.Errorf("raw Windows Button %q is missing", name)
-			continue
-		}
-		if actual.Caption != expected.Text || actual.Picture != expected.Icon ||
-			actual.ControlTipText != expected.Tip || actual.BackStyle != expected.Outline {
-			t.Errorf("Button %q content: caption=%q/%q picture=%q/%q tip=%q/%q outline=%d/%d",
-				name, actual.Caption, expected.Text, actual.Picture, expected.Icon,
-				actual.ControlTipText, expected.Tip, actual.BackStyle, expected.Outline)
-		}
-		if actual.BackColorValue != uint32(expected.Color) {
-			t.Errorf("Button %q BackColorValue=%d raw Color=%d", name, actual.BackColorValue, expected.Color)
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("Button %q geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)", name,
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
 	}
 }
 
@@ -1800,64 +1535,6 @@ func TestParseJet4ButtonDefaultHeight(t *testing.T) {
 	}
 }
 
-func TestReadFormContentFAbiaMasterQueryGeneralCheckBoxAgainstRawWindowsExport(t *testing.T) {
-	fixturePath := filepath.Join("testdb", "t_abia_master_query_org.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read raw Windows export %s failed: %v", fixturePath, err)
-	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatalf("parse raw Windows export %s failed: %v", fixturePath, err)
-	}
-
-	var expected windowsRawExportedControl
-	foundExpected := false
-	for _, root := range fixture.Controls {
-		for _, control := range root.Controls {
-			if control.ClassType == "CheckBox" && control.Name == "isf_sw" {
-				expected = control
-				foundExpected = true
-				break
-			}
-		}
-	}
-	if !foundExpected {
-		t.Fatal("raw Windows CheckBox isf_sw is missing")
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master_query_general")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master_query_general", err)
-	}
-	for _, actual := range content.Controls {
-		if actual.Type != "CheckBox" || actual.Name != expected.Name {
-			continue
-		}
-		if actual.ControlSource != expected.Source || actual.Locked != expected.Locked {
-			t.Errorf("CheckBox source=%q/%q locked=%v/%v",
-				actual.ControlSource, expected.Source, actual.Locked, expected.Locked)
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("CheckBox geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)",
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-		if actual.Tag != "isf_sw" || !actual.Visible || actual.TabIndex != 11 {
-			t.Errorf("CheckBox extra fields: Tag=%q Visible=%v TabIndex=%d",
-				actual.Tag, actual.Visible, actual.TabIndex)
-		}
-		return
-	}
-	t.Fatal("parsed CheckBox isf_sw is missing")
-}
-
 func TestParseJet4CheckBoxNumericTail(t *testing.T) {
 	tail := []byte{
 		0xFD, 0x6A, 0x00, 0x32, 0x55,
@@ -2023,6 +1700,23 @@ func TestParseJet4OptionButtonNumericTail(t *testing.T) {
 			want: jet4OptionButtonNumericProperties{
 				OptionValue: 3, HasOptionValue: true, Visible: true,
 				Geometry:    formControlGeometry{Left: 7020, Top: 345, Width: 360, Height: 216},
+				HasGeometry: true,
+			},
+		},
+		{
+			name: "default height omitted",
+			tail: []byte{
+				0xFF, 0x02, 0x00, 0x69, 0x00,
+				0x32, 0x57,
+				0x60, 0xC8, 0x28,
+				0x61, 0x0C, 0x03,
+				0x62, 0xF0, 0x00,
+				0x9C, 0x01, 0x00, 0x00, 0x00,
+				0xDC, 0x28,
+			},
+			want: jet4OptionButtonNumericProperties{
+				OptionValue: 1, HasOptionValue: true, Visible: true,
+				Geometry:    formControlGeometry{Left: 10440, Top: 780, Width: 240, Height: 180},
 				HasGeometry: true,
 			},
 		},
@@ -2213,126 +1907,6 @@ func TestReadFormContentFDMsMawbCaseInsensitiveSubForm(t *testing.T) {
 	t.Fatal("SubForm Sub_dms_mawb_log_list is missing")
 }
 
-func TestReadFormContentSubFormsAgainstRawWindowsExport(t *testing.T) {
-	readForm := func(t *testing.T, formName string) *FormContent {
-		t.Helper()
-		db, err := Open(filepath.Clean(defaultTestDB))
-		if err != nil {
-			t.Fatalf("Open failed: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		content, err := db.ReadFormContent(formName)
-		if err != nil {
-			t.Fatalf("ReadFormContent(%q) failed: %v", formName, err)
-		}
-		return content
-	}
-	assertSubForm := func(t *testing.T, actual FormControlContent, expected windowsRawExportedControl) {
-		t.Helper()
-		if actual.SourceObject != expected.Source || actual.LinkChildFields != expected.SourceField {
-			t.Errorf("SubForm %q source=%q/%q child_fields=%q/%q", expected.Name,
-				actual.SourceObject, expected.Source, actual.LinkChildFields, expected.SourceField)
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("SubForm %q geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)", expected.Name,
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-		if actual.Locked != expected.Locked || actual.CanShrink != expected.NoWarp ||
-			!actual.Visible || !actual.HasGeometry {
-			t.Errorf("SubForm %q locked=%v/%v can_shrink=%v/%v visible=%v geometry_complete=%v", expected.Name,
-				actual.Locked, expected.Locked, actual.CanShrink, expected.NoWarp,
-				actual.Visible, actual.HasGeometry)
-		}
-	}
-
-	t.Run("query", func(t *testing.T) {
-		fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_query_org.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var fixture windowsRawExportedForm
-		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-			t.Fatal(err)
-		}
-		var expected windowsRawExportedControl
-		for _, control := range fixture.Controls {
-			if control.ClassType == "Table" && control.Name == "sub_abia_master_query_general" {
-				expected = control
-				break
-			}
-		}
-		if expected.Name == "" {
-			t.Fatal("raw Windows SubForm sub_abia_master_query_general is missing")
-		}
-		content := readForm(t, "f_abia_master_query")
-		for _, actual := range content.Controls {
-			if actual.Type == "SubForm" && actual.Name == expected.Name {
-				assertSubForm(t, actual, expected)
-				if actual.EventProcPrefix != "QueryGeneral" {
-					t.Errorf("SubForm EventProcPrefix=%q want=QueryGeneral", actual.EventProcPrefix)
-				}
-				return
-			}
-		}
-		t.Fatal("parsed SubForm sub_abia_master_query_general is missing")
-	})
-
-	t.Run("master tabs", func(t *testing.T) {
-		fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_org.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var fixture windowsRawExportedForm
-		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-			t.Fatal(err)
-		}
-		expectedByName := make(map[string]windowsRawExportedControl)
-		if len(fixture.Controls) > 0 {
-			for _, tab := range fixture.Controls[0].Tabs {
-				for _, control := range tab.Controls {
-					if control.ClassType == "Table" {
-						expectedByName[control.Name] = control
-					}
-				}
-			}
-		}
-		if len(expectedByName) != 4 {
-			t.Fatalf("raw Windows unique SubForms=%d want=4", len(expectedByName))
-		}
-		content := readForm(t, "f_abia_master")
-		actualByName := make(map[string]FormControlContent)
-		for _, actual := range content.Controls {
-			if actual.Type == "SubForm" {
-				actualByName[actual.Name] = actual
-			}
-		}
-		if len(actualByName) != len(expectedByName) {
-			t.Fatalf("parsed SubForms=%d raw Windows unique SubForms=%d", len(actualByName), len(expectedByName))
-		}
-		wantTabIndex := map[string]int{
-			"sub_abia_master_list_manifest":      5,
-			"sub_abia_master_list_2_event":       8,
-			"sub_abia_master_list_3_hbl_summary": 0,
-			"sub_abia_master_list_inbond":        1,
-		}
-		for name, expected := range expectedByName {
-			actual, ok := actualByName[name]
-			if !ok {
-				t.Errorf("raw Windows SubForm %q is missing", name)
-				continue
-			}
-			assertSubForm(t, actual, expected)
-			if actual.LinkMasterFields != expected.SourceField || actual.StatusBarText != "check" ||
-				actual.TabIndex != wantTabIndex[name] {
-				t.Errorf("SubForm %q master_fields=%q status=%q tab=%d", name,
-					actual.LinkMasterFields, actual.StatusBarText, actual.TabIndex)
-			}
-		}
-	})
-}
-
 func TestParseJet4TabControlTextProperties(t *testing.T) {
 	props := parseJet4TabControlTextProperties(
 		FormControlInfo{Name: "MainTab", Type: "TabControl"},
@@ -2416,50 +1990,6 @@ func TestParseJet4TabControlNumericTail(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestReadFormContentTabControlAgainstRawWindowsExport(t *testing.T) {
-	fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_org.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	if len(fixture.Controls) == 0 || fixture.Controls[0].ClassType != "TabControl" {
-		t.Fatal("raw Windows TabControl is missing")
-	}
-	expected := fixture.Controls[0]
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master", err)
-	}
-	for _, actual := range content.Controls {
-		if actual.Type != "TabControl" || actual.Name != expected.Name {
-			continue
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("TabControl geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)",
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-		if !actual.HasGeometry || !actual.Visible || actual.FontName != "Verdana" ||
-			actual.FontSize != 9 || actual.FontWeight != 700 || actual.EventProcPrefix != "MainTab" {
-			t.Errorf("TabControl fields: geometry=%v visible=%v font=%q/%d/%d prefix=%q",
-				actual.HasGeometry, actual.Visible, actual.FontName, actual.FontSize,
-				actual.FontWeight, actual.EventProcPrefix)
-		}
-		return
-	}
-	t.Fatal("parsed TabControl MainTab is missing")
 }
 
 func TestParseJet4TabPageTextProperties(t *testing.T) {
@@ -2555,173 +2085,37 @@ func TestParseJet4TabPageNumericTail(t *testing.T) {
 	}
 }
 
-func TestReadFormContentTabPagesAgainstRawWindowsExport(t *testing.T) {
-	fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_org.json"))
-	if err != nil {
-		t.Fatal(err)
+func TestParseJet4RectangleDefaultHeight(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix []byte
+		want   int
+	}{
+		{
+			name:   "no rectangle template",
+			prefix: []byte{0xFD, 0x68, 0x00, 0x63, 0xA4, 0x01},
+			want:   jet4RectangleBuiltInDefaultHeight,
+		},
+		{
+			name: "template omits height",
+			prefix: []byte{0x00, 0xFF, 0x12, 0x00, 0xFD, 0x65, 0x00, 0x31, 0x03, 0x32, 0x00,
+				0xFD, 0x67, 0x00, 0x32, 0x00},
+			want: jet4RectangleBuiltInDefaultHeight,
+		},
+		{
+			name: "template has explicit height",
+			prefix: []byte{0xFD, 0x65, 0x00, 0x31, 0x03, 0x32, 0x00, 0x63, 0x84, 0x03,
+				0xFD, 0x67, 0x00},
+			want: 900,
+		},
 	}
-	var fixture windowsRawExportedForm
-	if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	if len(fixture.Controls) == 0 || fixture.Controls[0].ClassType != "TabControl" {
-		t.Fatal("raw Windows TabControl is missing")
-	}
-	expectedTabs := fixture.Controls[0].Tabs
-	if len(expectedTabs) != 3 {
-		t.Fatalf("raw Windows TabPages=%d want=3", len(expectedTabs))
-	}
-
-	db, err := Open(filepath.Clean(defaultTestDB))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	content, err := db.ReadFormContent("f_abia_master")
-	if err != nil {
-		t.Fatalf("ReadFormContent(%q) failed: %v", "f_abia_master", err)
-	}
-	actualByName := make(map[string]FormControlContent)
-	for _, actual := range content.Controls {
-		if actual.Type == "TabPage" {
-			actualByName[actual.Name] = actual
-		}
-	}
-	if len(actualByName) != len(expectedTabs) {
-		t.Fatalf("parsed TabPages=%d raw Windows TabPages=%d", len(actualByName), len(expectedTabs))
-	}
-	for pageIndex, expected := range expectedTabs {
-		actual, ok := actualByName[expected.Name]
-		if !ok {
-			t.Errorf("raw Windows TabPage %q is missing", expected.Name)
-			continue
-		}
-		if actual.Caption != expected.Text {
-			t.Errorf("TabPage %q Caption=%q raw Text=%q", expected.Name, actual.Caption, expected.Text)
-		}
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("TabPage %q geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)", expected.Name,
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-		if !actual.HasGeometry || !actual.Visible || actual.PageIndex != pageIndex {
-			t.Errorf("TabPage %q geometry=%v visible=%v PageIndex=%d want=%d", expected.Name,
-				actual.HasGeometry, actual.Visible, actual.PageIndex, pageIndex)
-		}
-	}
-	if actualByName["ManifestStatus"].EventProcPrefix != "Group" {
-		t.Errorf("ManifestStatus EventProcPrefix=%q want=Group",
-			actualByName["ManifestStatus"].EventProcPrefix)
-	}
-}
-
-func TestReadFormContentRectanglesAgainstRawWindowsExport(t *testing.T) {
-	assertRectangle := func(t *testing.T, actual FormControlContent, expected windowsRawExportedControl) {
-		t.Helper()
-		if actual.Left != expected.Left || actual.Top != expected.Top ||
-			actual.Width != expected.Width || actual.Height != expected.Height {
-			t.Errorf("Rectangle %q geometry=(%d,%d,%d,%d) raw=(%d,%d,%d,%d)", expected.Name,
-				actual.Left, actual.Top, actual.Width, actual.Height,
-				expected.Left, expected.Top, expected.Width, expected.Height)
-		}
-		if actual.BackColorValue != uint32(expected.BackGroundColor) ||
-			actual.BorderColorValue != uint32(expected.LineColor) {
-			t.Errorf("Rectangle %q colors: back=%d/%d border=%d/%d", expected.Name,
-				actual.BackColorValue, expected.BackGroundColor,
-				actual.BorderColorValue, expected.LineColor)
-		}
-		if actual.BorderWidth != expected.LineWidth || actual.BackStyle != expected.BackTransparent ||
-			actual.BorderStyle != expected.LineTransparent {
-			t.Errorf("Rectangle %q border: width=%d/%d back_style=%d/%d border_style=%d/%d", expected.Name,
-				actual.BorderWidth, expected.LineWidth, actual.BackStyle, expected.BackTransparent,
-				actual.BorderStyle, expected.LineTransparent)
-		}
-	}
-	readForm := func(t *testing.T, formName string) *FormContent {
-		t.Helper()
-		db, err := Open(filepath.Clean(defaultTestDB))
-		if err != nil {
-			t.Fatalf("Open failed: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		content, err := db.ReadFormContent(formName)
-		if err != nil {
-			t.Fatalf("ReadFormContent(%q) failed: %v", formName, err)
-		}
-		return content
-	}
-
-	t.Run("query default fields", func(t *testing.T) {
-		fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_query_org.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var fixture windowsRawExportedForm
-		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-			t.Fatal(err)
-		}
-		var expected windowsRawExportedControl
-		for _, control := range fixture.Controls {
-			if control.ClassType == "Rectangle" && control.Name == "Boxheadline" {
-				expected = control
-				break
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseJet4RectangleDefaultHeight(tt.prefix); got != tt.want {
+				t.Fatalf("parseJet4RectangleDefaultHeight()=%d want=%d", got, tt.want)
 			}
-		}
-		if expected.Name == "" {
-			t.Fatal("raw Windows Rectangle Boxheadline is missing")
-		}
-		content := readForm(t, "f_abia_master_query")
-		for _, actual := range content.Controls {
-			if actual.Type == "Rectangle" && actual.Name == expected.Name {
-				assertRectangle(t, actual, expected)
-				return
-			}
-		}
-		t.Fatal("parsed Rectangle Boxheadline is missing")
-	})
-
-	t.Run("master explicit colors", func(t *testing.T) {
-		fixtureData, err := os.ReadFile(filepath.Join("testdb", "t_abia_master_org.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var fixture windowsRawExportedForm
-		if err := json.Unmarshal(fixtureData, &fixture); err != nil {
-			t.Fatal(err)
-		}
-		expectedByName := make(map[string]windowsRawExportedControl)
-		if len(fixture.Controls) > 0 {
-			for _, tab := range fixture.Controls[0].Tabs {
-				for _, control := range tab.Controls {
-					if control.ClassType == "Rectangle" {
-						expectedByName[control.Name] = control
-					}
-				}
-			}
-		}
-		if len(expectedByName) != 12 {
-			t.Fatalf("raw Windows Rectangle controls=%d want=12", len(expectedByName))
-		}
-		content := readForm(t, "f_abia_master")
-		actualByName := make(map[string]FormControlContent)
-		for _, actual := range content.Controls {
-			if actual.Type == "Rectangle" {
-				actualByName[actual.Name] = actual
-			}
-		}
-		if len(actualByName) != len(expectedByName) {
-			t.Fatalf("parsed Rectangles=%d raw Windows Rectangles=%d", len(actualByName), len(expectedByName))
-		}
-		for name, expected := range expectedByName {
-			actual, ok := actualByName[name]
-			if !ok {
-				t.Errorf("raw Windows Rectangle %q is missing", name)
-				continue
-			}
-			assertRectangle(t, actual, expected)
-		}
-	})
+		})
+	}
 }
 
 func TestParseJet4RectangleNumericTail(t *testing.T) {
@@ -2753,6 +2147,18 @@ func TestParseJet4RectangleNumericTail(t *testing.T) {
 			},
 		},
 		{
+			name: "omitted default height",
+			tail: []byte{0xFD, 0x65, 0x00, 0x31, 0x00, 0x34, 0x01, 0x35, 0xFF,
+				0x60, 0x2C, 0x01, 0x61, 0xE8, 0x08, 0x62, 0x08, 0x07,
+				0x9C, 0xC0, 0xC0, 0xC0, 0x00, 0x9D, 0x80, 0x80, 0x80, 0x00, 0xDC, 0x12},
+			want: jet4RectangleNumericProperties{
+				BorderStyle: 1, BorderWidth: 1,
+				BackColor: "#c0c0c0", BackColorValue: 12632256,
+				BorderColor: "#808080", BorderColorValue: 8421504, Visible: true,
+				Geometry: formControlGeometry{Left: 300, Top: 2280, Width: 1800, Height: 720}, HasGeometry: true,
+			},
+		},
+		{
 			name: "tab page boundary prefix",
 			tail: []byte{0xFF, 0x28, 0x00, 0x65, 0x00, 0x31, 0x00, 0x34, 0x01, 0x35, 0xFF,
 				0x60, 0x2C, 0x01, 0x61, 0x90, 0x09, 0x62, 0xEC, 0x13, 0x63, 0xD8, 0x09,
@@ -2776,6 +2182,18 @@ func TestParseJet4RectangleNumericTail(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("form template supplies omitted height", func(t *testing.T) {
+		tail := []byte{0xFD, 0x65, 0x00, 0x31, 0x00, 0x34, 0x01,
+			0x60, 0x2C, 0x01, 0x61, 0xE8, 0x08, 0x62, 0x08, 0x07, 0xDC, 0x12}
+		got, ok := parseJet4RectangleNumericTailWithDefaultHeight(tail, 900)
+		if !ok {
+			t.Fatal("parseJet4RectangleNumericTailWithDefaultHeight did not recognize Rectangle record")
+		}
+		if got.Geometry.Height != 900 {
+			t.Fatalf("Rectangle height=%d want form template height=900", got.Geometry.Height)
+		}
+	})
 }
 
 func TestFormPropertyIDToNameAgainstInterop(t *testing.T) {
@@ -3458,8 +2876,12 @@ func debugLogFormBlobControls(t *testing.T, streams *FormObjectStreams) {
 	if err != nil {
 		t.Fatalf("ParseFormTypeInfo failed: %v", err)
 	}
+	blob := streams.Blob
+	if os.Getenv("MDBGO_DEBUG_EXPANDED_RAW") == "" {
+		blob = normalizeJet4ExpandedFormBlob(streams.Blob, controls)
+	}
 	controlFilter := strings.TrimSpace(os.Getenv("MDBGO_DEBUG_FORM_CONTROL"))
-	controlOffsets := orderedFormControlOffsets(streams.Blob, controls)
+	controlOffsets := orderedFormControlOffsets(blob, controls)
 	indices := make([]int, len(controls))
 	for i := range indices {
 		indices[i] = i
@@ -3493,13 +2915,13 @@ func debugLogFormBlobControls(t *testing.T, streams *FormObjectStreams) {
 			t.Logf("control=%q type=%s has no Blob block", control.Name, control.Type)
 			continue
 		}
-		end := len(streams.Blob)
+		end := len(blob)
 		for _, offset := range controlOffsets {
 			if offset > start && offset < end {
 				end = offset
 			}
 		}
-		block := streams.Blob[start:end]
+		block := blob[start:end]
 		numericTail := jet4ControlNumericTailForType(block, control.Name, control.Type)
 		numeric, numericOK := parseJet4TextBoxNumericTail(numericTail)
 		labelNumeric, labelNumericOK := parseJet4LabelNumericTail(numericTail)

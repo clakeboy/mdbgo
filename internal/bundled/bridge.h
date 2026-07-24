@@ -104,6 +104,22 @@ typedef struct mdbgo_access_object_data_array {
     size_t count;
 } mdbgo_access_object_data_array_t;
 
+/* 一条 MSysAccessStorage 目录或数据流记录。 */
+typedef struct mdbgo_access_storage_entry {
+    int id;
+    int parent_id;
+    int entry_type;
+    char *name;
+    unsigned char *data;
+    size_t len;
+} mdbgo_access_storage_entry_t;
+
+/* MSysAccessStorage 的批量读取结果。 */
+typedef struct mdbgo_access_storage_entry_array {
+    mdbgo_access_storage_entry_t *values;
+    size_t count;
+} mdbgo_access_storage_entry_array_t;
+
 /* int 数组结果。 */
 typedef struct mdbgo_int_array {
     int *values;
@@ -115,6 +131,9 @@ int mdbgo_open(const char *path, mdbgo_db_t **out_db, char *err, size_t err_len)
 
 /* 关闭数据库句柄，允许传入 NULL。 */
 void mdbgo_close(mdbgo_db_t *db);
+
+/* 返回文件头格式版本和页大小。 */
+int mdbgo_get_file_format(mdbgo_db_t *db, int *out_version, size_t *out_page_size, char *err, size_t err_len);
 
 /* 返回用户表名列表。names 需用 mdbgo_free_string_array 释放。 */
 int mdbgo_list_tables(mdbgo_db_t *db, char ***out_names, size_t *out_count, char *err, size_t err_len);
@@ -178,6 +197,15 @@ int mdbgo_read_access_object_data_all(mdbgo_db_t *db, mdbgo_access_object_data_a
 
 /* 释放 mdbgo_read_access_object_data_all 返回的数据。 */
 void mdbgo_free_access_object_data_array(mdbgo_access_object_data_array_t *out);
+
+/* 返回应用对象存储类型：0=不存在，1=MSysAccessObjects，2=MSysAccessStorage。 */
+int mdbgo_access_object_storage_kind(mdbgo_db_t *db, int *out_kind, char *err, size_t err_len);
+
+/* 单次顺序扫描读取 MSysAccessStorage 的目录树和 Lv 数据。 */
+int mdbgo_read_access_storage_entries(mdbgo_db_t *db, mdbgo_access_storage_entry_array_t *out, char *err, size_t err_len);
+
+/* 释放 mdbgo_read_access_storage_entries 返回的数据。 */
+void mdbgo_free_access_storage_entries(mdbgo_access_storage_entry_array_t *out);
 
 /* 列出 MSysAccessObjects 的全部 ID。out 需用 mdbgo_free_int_array 释放。 */
 int mdbgo_list_access_object_ids(mdbgo_db_t *db, mdbgo_int_array_t *out, char *err, size_t err_len);

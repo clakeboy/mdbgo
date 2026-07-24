@@ -26,6 +26,25 @@ import (
 
 const cErrBufSize = 2048
 
+// DatabaseFormat 描述当前打开的 Access 数据库文件格式。
+type DatabaseFormat struct {
+	// Name 是面向调用方展示的格式名称，例如 "Access 2000"。
+	Name string
+	// Engine 是底层数据库引擎系列，例如 "Jet 4" 或 "ACE"。
+	Engine string
+	// Version 是 MDB/ACCDB 文件头中的原始格式版本号。
+	Version int
+	// PageSize 是数据库页面大小，单位为字节。
+	PageSize int
+	// ObjectStorage 是应用对象使用的系统存储表；没有时为空。
+	ObjectStorage string
+}
+
+// String 返回面向展示的格式名称。
+func (format DatabaseFormat) String() string {
+	return format.Name
+}
+
 // OpenOptions controls resources owned by a DB.
 type OpenOptions struct {
 	// MaxConcurrentQueries is the maximum number of Query, QueryContext,
@@ -45,6 +64,9 @@ type OpenOptions struct {
 type DB struct {
 	ptr  *C.mdbgo_db_t
 	path string
+
+	// Format 是当前打开文件的格式信息，在 Open/OpenWithOptions 成功后保持不变。
+	Format DatabaseFormat
 
 	stateMu   sync.Mutex
 	closed    bool
@@ -79,6 +101,12 @@ func OpenWithOptions(path string, options OpenOptions) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	format, err := db.detectDatabaseFormat()
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("detect database format: %w", err)
+	}
+	db.Format = format
 	maxQueries := options.MaxConcurrentQueries
 	if maxQueries == 0 {
 		maxQueries = defaultMaxConcurrentQueries()
@@ -107,6 +135,75 @@ func openDBHandle(path string) (*DB, error) {
 		identityPath = absolute
 	}
 	return &DB{ptr: dbPtr, path: identityPath}, nil
+}
+
+func (db *DB) detectDatabaseFormat() (DatabaseFormat, error) {
+	if db == nil || db.ptr == nil {
+		return DatabaseFormat{}, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var version C.int
+	var pageSize C.size_t
+	rc := C.mdbgo_get_file_format(
+		db.ptr,
+		&version,
+		&pageSize,
+		(*C.char)(unsafe.Pointer(&errBuf[0])),
+		C.size_t(len(errBuf)),
+	)
+	if rc != 0 {
+		return DatabaseFormat{}, errors.New(cStringFromBuf(errBuf))
+	}
+
+	format := DatabaseFormat{
+		Version:  int(version),
+		PageSize: int(pageSize),
+	}
+	storageKind, err := db.accessObjectStorageKind()
+	if err != nil {
+		return DatabaseFormat{}, err
+	}
+	switch storageKind {
+	case accessObjectStorageObjects:
+		format.ObjectStorage = "MSysAccessObjects"
+	case accessObjectStorageTree:
+		format.ObjectStorage = "MSysAccessStorage"
+	}
+
+	switch format.Version {
+	case 0:
+		format.Name = "Access 97"
+		format.Engine = "Jet 3"
+	case 1:
+		format.Name = "Access 2000-2003"
+		format.Engine = "Jet 4"
+		switch storageKind {
+		case accessObjectStorageObjects:
+			format.Name = "Access 2000"
+		case accessObjectStorageTree:
+			format.Name = "Access 2003"
+		}
+	case 2:
+		format.Name = "Access 2007"
+		format.Engine = "ACE"
+	case 3:
+		format.Name = "Access 2010"
+		format.Engine = "ACE"
+	case 4:
+		format.Name = "Access 2013"
+		format.Engine = "ACE"
+	case 5:
+		format.Name = "Access 2016"
+		format.Engine = "ACE"
+	case 6:
+		format.Name = "Access 2019"
+		format.Engine = "ACE"
+	default:
+		format.Name = fmt.Sprintf("Access format 0x%02x", format.Version)
+		format.Engine = "Unknown"
+	}
+	return format, nil
 }
 
 // Close 释放底层 C 句柄，支持重复调用。

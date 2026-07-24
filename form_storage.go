@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/richardlehane/mscfb"
 )
@@ -52,6 +53,19 @@ func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 	if db == nil || db.ptr == nil {
 		return nil, errors.New("db is closed")
 	}
+	kind, err := db.accessObjectStorageKind()
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case accessObjectStorageTree:
+		return nil, errors.New("MSysAccessStorage stores entries directly and has no OLE Compound container; use ReadAccessObjectEntries")
+	case accessObjectStorageNone:
+		return nil, errors.New("database contains neither MSysAccessObjects nor MSysAccessStorage")
+	case accessObjectStorageObjects:
+	default:
+		return nil, fmt.Errorf("unsupported Access object storage kind: %d", kind)
+	}
 
 	objects, err := db.readAccessObjectDataAll()
 	if err != nil {
@@ -91,8 +105,32 @@ func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 	return result, nil
 }
 
-// ReadAccessObjectEntries 读取 Access 内部 OLE Compound 容器的全部目录和流。
+// ReadAccessObjectEntries 读取 Access 内部对象存储的全部目录和流。
+//
+// Access 2000 的 MSysAccessObjects 保存 OLE Compound 分片；Access 2003 的
+// MSysAccessStorage 直接保存父子目录树。两种布局都归一化为 AccessObjectEntry。
 func (db *DB) ReadAccessObjectEntries() ([]AccessObjectEntry, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+	kind, err := db.accessObjectStorageKind()
+	if err != nil {
+		return nil, err
+	}
+	if kind == accessObjectStorageTree {
+		rows, err := db.readAccessStorageRows()
+		if err != nil {
+			return nil, err
+		}
+		return accessObjectEntriesFromStorage(rows)
+	}
+	if kind == accessObjectStorageNone {
+		return nil, errors.New("database contains neither MSysAccessObjects nor MSysAccessStorage")
+	}
+	if kind != accessObjectStorageObjects {
+		return nil, fmt.Errorf("unsupported Access object storage kind: %d", kind)
+	}
+
 	container, err := db.ReadAccessObjectContainer()
 	if err != nil {
 		return nil, err
@@ -121,6 +159,84 @@ func (db *DB) ReadAccessObjectEntries() ([]AccessObjectEntry, error) {
 	return entries, nil
 }
 
+func accessObjectEntriesFromStorage(rows []accessStorageRow) ([]AccessObjectEntry, error) {
+	if len(rows) == 0 {
+		return nil, errors.New("MSysAccessStorage is empty")
+	}
+
+	rowsByID := make(map[int]accessStorageRow, len(rows))
+	for _, row := range rows {
+		if _, exists := rowsByID[row.ID]; exists {
+			return nil, fmt.Errorf("MSysAccessStorage contains duplicate Id: %d", row.ID)
+		}
+		rowsByID[row.ID] = row
+	}
+
+	paths := make(map[int]string, len(rows))
+	visiting := make(map[int]bool)
+	var pathForID func(int) (string, error)
+	pathForID = func(id int) (string, error) {
+		if path, ok := paths[id]; ok {
+			return path, nil
+		}
+		row, ok := rowsByID[id]
+		if !ok {
+			return "", fmt.Errorf("MSysAccessStorage parent not found: %d", id)
+		}
+		if visiting[id] {
+			return "", fmt.Errorf("MSysAccessStorage contains a parent cycle at Id=%d", id)
+		}
+		if row.ParentID == row.ID {
+			paths[id] = ""
+			return "", nil
+		}
+
+		visiting[id] = true
+		parentPath, err := pathForID(row.ParentID)
+		delete(visiting, id)
+		if err != nil {
+			return "", err
+		}
+		name := strings.TrimLeftFunc(row.Name, unicode.IsControl)
+		if name == "" {
+			return "", fmt.Errorf("MSysAccessStorage entry has an empty Name: Id=%d", id)
+		}
+		path := name
+		if parentPath != "" {
+			path = parentPath + "/" + name
+		}
+		paths[id] = path
+		return path, nil
+	}
+
+	entries := make([]AccessObjectEntry, 0, len(rows))
+	for _, row := range rows {
+		if row.ParentID == row.ID {
+			continue
+		}
+		path, err := pathForID(row.ID)
+		if err != nil {
+			return nil, err
+		}
+		name := strings.TrimLeftFunc(row.Name, unicode.IsControl)
+		entry := AccessObjectEntry{
+			Path: path,
+			Name: name,
+			Size: int64(len(row.Data)),
+			Data: row.Data,
+		}
+		switch row.Type {
+		case 1:
+			entry.IsDir = true
+		case 2:
+		default:
+			return nil, fmt.Errorf("MSysAccessStorage entry has unsupported Type=%d: Id=%d", row.Type, row.ID)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
 // ReadFormObjectStreams 按窗体名读取 Blob、TypeInfo、PropData 和 BlobDelta。
 func (db *DB) ReadFormObjectStreams(formName string) (*FormObjectStreams, error) {
 	if db == nil || db.ptr == nil {
@@ -140,9 +256,17 @@ func (db *DB) ReadFormObjectStreams(formName string) (*FormObjectStreams, error)
 func formStorageIDsFromEntries(entries []AccessObjectEntry) (map[string]int, error) {
 	var dirData []byte
 	for _, entry := range entries {
-		if !entry.IsDir && (entry.Path == "Forms/DirData" || strings.HasSuffix(entry.Path, "/DirData")) {
+		if !entry.IsDir && entry.Path == "Forms/DirData" {
 			dirData = entry.Data
 			break
+		}
+	}
+	if len(dirData) == 0 {
+		for _, entry := range entries {
+			if !entry.IsDir && strings.HasSuffix(entry.Path, "/Forms/DirData") {
+				dirData = entry.Data
+				break
+			}
 		}
 	}
 	if len(dirData) == 0 {

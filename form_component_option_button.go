@@ -137,7 +137,12 @@ func parseJet4FormOptionButtonProperties(data []byte, controls []FormControlInfo
 }
 
 func parseJet4OptionButtonNumericTail(tail []byte) (jet4OptionButtonNumericProperties, bool) {
-	result := jet4OptionButtonNumericProperties{Visible: true}
+	// Access 会省略默认的 180-twip 高度；这种记录仍是完整的
+	// OptionButton，不能因为没有 0x63 就丢弃并造成后续控件错位。
+	result := jet4OptionButtonNumericProperties{
+		Visible:  true,
+		Geometry: formControlGeometry{Height: 180},
+	}
 	if len(tail) < 12 {
 		return result, false
 	}
@@ -164,7 +169,6 @@ func parseJet4OptionButtonNumericTail(tail []byte) (jet4OptionButtonNumericPrope
 	}
 
 	foundWidth := false
-	foundHeight := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -200,7 +204,6 @@ func parseJet4OptionButtonNumericTail(tail []byte) (jet4OptionButtonNumericPrope
 				foundWidth = true
 			case 0x63:
 				result.Geometry.Height = value
-				foundHeight = true
 			case 0x69:
 				result.TabIndex = value
 				result.HasTabIndex = true
@@ -224,7 +227,7 @@ func parseJet4OptionButtonNumericTail(tail []byte) (jet4OptionButtonNumericPrope
 			pos++
 		}
 	}
-	if !foundWidth || !foundHeight || !result.HasOptionValue ||
+	if !foundWidth || !result.HasOptionValue ||
 		(result.HasSpecialEffect && result.SpecialEffect > 3) ||
 		(result.HasBorderStyle && result.BorderStyle > 1) ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||

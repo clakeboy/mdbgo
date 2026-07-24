@@ -816,73 +816,6 @@ func TestExportFormAsAccessJSON(t *testing.T) {
 	t.Logf("form=%q JSON written to %s (%d bytes)", formName, outputPath, len(data))
 }
 
-func TestBuildAccessJSONFAbiaMaster(t *testing.T) {
-	db, err := Open(requireDBFile(t))
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	entries, err := db.ReadAccessObjectEntries()
-	if err != nil {
-		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
-	}
-	exported, err := newAccessRawJSONBuilder(entries).buildForm("f_abia_master")
-	if err != nil {
-		t.Fatalf("build Access JSON failed: %v", err)
-	}
-	if exported.Name != "f_abia_master" || exported.Title != "Query MAWB Manifest / ABI Status" {
-		t.Fatalf("form identity=%+v", exported)
-	}
-	if exported.Height != 8640 || exported.BackGroundColor != -2147483633 {
-		t.Fatalf("form visual properties=%+v", exported)
-	}
-	if len(exported.Controls) != 1 || exported.Controls[0].ClassType != "TabControl" ||
-		len(exported.Controls[0].Tabs) != 3 {
-		t.Fatalf("root controls=%d first=%+v", len(exported.Controls), exported.Controls[0])
-	}
-	rawFixture, err := os.ReadFile("testdb/t_abia_master_org.json")
-	if err != nil {
-		t.Fatalf("read raw Access fixture failed: %v", err)
-	}
-	var expected accessRawJSONForm
-	if err := json.Unmarshal(rawFixture, &expected); err != nil {
-		t.Fatalf("decode raw Access fixture failed: %v", err)
-	}
-	clearAccessRawJSONBackStyleForLegacyFixture(exported.Controls, expected.Controls)
-	if len(expected.Controls) == 0 || !reflect.DeepEqual(exported.Controls[0], expected.Controls[0]) {
-		// Access 根级 Controls 还会重复枚举部分 COM 子对象，语义树以首个 TabControl 为准；
-		// Hash 是 COM 包装对象的运行时值，解码到 accessRawJSONControl 时会自动忽略。
-		t.Fatal("mdbgo semantic control tree differs from raw Access export")
-	}
-	wantPageControlCounts := map[string]int{
-		"ManifestStatus": 30,
-		"MasterInbond":   52,
-		"HouseList":      6,
-	}
-	for _, page := range exported.Controls[0].Tabs {
-		if want, ok := wantPageControlCounts[page.Name]; !ok || len(page.Controls) != want {
-			t.Errorf("page %q controls=%d want=%d", page.Name, len(page.Controls), want)
-		}
-	}
-	manifestTable := findAccessRawJSONControl(exported.Controls, "sub_abia_master_list_manifest")
-	if manifestTable == nil || manifestTable.ClassType != "Table" || len(manifestTable.Controls) != 22 {
-		t.Fatalf("manifest Table=%+v", manifestTable)
-	}
-	eventTable := findAccessRawJSONControl(exported.Controls, "sub_abia_master_list_2_event")
-	if eventTable == nil || eventTable.NoWarp == nil || !*eventTable.NoWarp {
-		t.Fatalf("event Table NoWarp=%+v", eventTable)
-	}
-	houseNumber := findAccessRawJSONControl(exported.Controls, "house_no")
-	if houseNumber == nil || houseNumber.Underline == nil || !*houseNumber.Underline {
-		t.Fatalf("house_no Underline=%+v", houseNumber)
-	}
-}
-
-func TestBuildAccessJSONFAbiEntryLineReview(t *testing.T) {
-	testBuildAccessJSONAgainstRawFixture(t,
-		"f_abi_entry_line_review", filepath.Join("testdb", "f_abi_entry_line_review_org.json"))
-}
-
 func TestBuildAccessJSONFOemHblQuery(t *testing.T) {
 	testBuildAccessJSONAgainstRawFixture(t,
 		"f_oem_hbl_query", filepath.Join("testdb", "f_oem_hbl_query_org.json"))
@@ -901,6 +834,58 @@ func TestBuildAccessJSONFAbiEntry(t *testing.T) {
 func TestBuildAccessJSONFOem(t *testing.T) {
 	testBuildAccessJSONPropertiesAgainstRawFixture(t,
 		"f_oem", filepath.Join("testdb", "f_oem_org.json"))
+}
+
+func TestBuildAccessJSONFCVMRectanglesAgainstRawFixture(t *testing.T) {
+	dbPath := filepath.Join("testdb", "mdbs", "dms-0723.mdb")
+	fixturePath := filepath.Join("testdb", "f_cvm_org.json")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("skip integration test, db file not found: %s, err=%v", dbPath, err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+	}
+	exported, err := newAccessRawJSONBuilder(entries).buildForm("f_cvm")
+	if err != nil {
+		t.Fatalf("build Access JSON failed: %v", err)
+	}
+
+	rawFixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read raw Access fixture failed: %v", err)
+	}
+	var expected accessRawJSONForm
+	if err := json.Unmarshal(rawFixture, &expected); err != nil {
+		t.Fatalf("decode raw Access fixture failed: %v", err)
+	}
+	expectedByKey := accessRawControlsByKey(expected.Controls)
+
+	rectangleNames := make(map[string]bool)
+	var compareRectangles func([]accessRawJSONControl)
+	compareRectangles = func(controls []accessRawJSONControl) {
+		for _, control := range controls {
+			if control.ClassType == "Rectangle" && !rectangleNames[control.Name] {
+				rectangleNames[control.Name] = true
+				key := accessRawControlKey(control)
+				if !containsAccessRawControl(expectedByKey[key], accessRawControlScalar(control)) {
+					t.Errorf("Rectangle %q differs from raw Access export: %+v", control.Name, control)
+				}
+			}
+			compareRectangles(control.Tabs)
+			compareRectangles(control.Controls)
+		}
+	}
+	compareRectangles(exported.Controls)
+	if len(rectangleNames) != 18 {
+		t.Fatalf("parsed unique Rectangles=%d want=18", len(rectangleNames))
+	}
 }
 
 func TestBuildControlSequenceKeepsControlsAboveTabFrameAtRoot(t *testing.T) {

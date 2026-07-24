@@ -68,6 +68,20 @@ type FormContent struct {
 	Controls []FormControlContent
 }
 
+const (
+	accessObjectStorageNone    = 0
+	accessObjectStorageObjects = 1
+	accessObjectStorageTree    = 2
+)
+
+type accessStorageRow struct {
+	ID       int
+	ParentID int
+	Type     int
+	Name     string
+	Data     []byte
+}
+
 // ExportForms 导出 Access 窗体及其组件信息。
 //
 // 返回结果中：
@@ -250,6 +264,61 @@ func (db *DB) readAccessObjectDataAll() ([]AccessObjectData, error) {
 	return result, nil
 }
 
+func (db *DB) accessObjectStorageKind() (int, error) {
+	if db == nil || db.ptr == nil {
+		return accessObjectStorageNone, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var kind C.int
+	rc := C.mdbgo_access_object_storage_kind(
+		db.ptr,
+		&kind,
+		(*C.char)(unsafe.Pointer(&errBuf[0])),
+		C.size_t(len(errBuf)),
+	)
+	if rc != 0 {
+		return accessObjectStorageNone, errors.New(cStringFromBuf(errBuf))
+	}
+	return int(kind), nil
+}
+
+func (db *DB) readAccessStorageRows() ([]accessStorageRow, error) {
+	if db == nil || db.ptr == nil {
+		return nil, errors.New("db is closed")
+	}
+
+	errBuf := make([]byte, cErrBufSize)
+	var raw C.mdbgo_access_storage_entry_array_t
+	rc := C.mdbgo_read_access_storage_entries(
+		db.ptr,
+		&raw,
+		(*C.char)(unsafe.Pointer(&errBuf[0])),
+		C.size_t(len(errBuf)),
+	)
+	if rc != 0 {
+		return nil, errors.New(cStringFromBuf(errBuf))
+	}
+	defer C.mdbgo_free_access_storage_entries(&raw)
+
+	n := int(raw.count)
+	if n <= 0 || raw.values == nil {
+		return nil, nil
+	}
+	cValues := unsafe.Slice((*C.mdbgo_access_storage_entry_t)(unsafe.Pointer(raw.values)), n)
+	result := make([]accessStorageRow, n)
+	for i := range cValues {
+		result[i] = accessStorageRow{
+			ID:       int(cValues[i].id),
+			ParentID: int(cValues[i].parent_id),
+			Type:     int(cValues[i].entry_type),
+			Name:     C.GoString(cValues[i].name),
+			Data:     cBytesToGo(cValues[i].data, int(cValues[i].len)),
+		}
+	}
+	return result, nil
+}
+
 // ExportFormContent 读取并导出指定窗体的完整内容。
 //
 // 此方法只解析指定窗体，不会调用 ExportFormContents 或解析其他窗体。
@@ -261,8 +330,8 @@ func (db *DB) ExportFormContent(formName string) (*FormContent, error) {
 	return ParseFormContent(streams)
 }
 
-// ExportFormContents 一次读取内部 OLE 容器并导出全部窗体内容。
-// 相比循环调用 ReadFormContent，此方法不会为每个窗体重复重组 MSysAccessObjects。
+// ExportFormContents 一次读取内部对象存储并导出全部窗体内容。
+// 相比循环调用 ReadFormContent，此方法不会为每个窗体重复读取和重组对象存储。
 func (db *DB) ExportFormContents() ([]FormContent, error) {
 	if db == nil || db.ptr == nil {
 		return nil, errors.New("db is closed")
@@ -349,30 +418,117 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse TypeInfo for %s: %w", streams.FormName, err)
 	}
+	expandedJet4 := len(streams.Blob) >= 2 && le16(streams.Blob) == 0x0014
 	controlOffsets := orderedFormControlOffsets(streams.Blob, controls)
+	if expandedJet4 {
+		controlOffsets = jet4ExpandedFormControlOffsets(streams.Blob, controls, controlOffsets)
+	}
+	jet4Data := normalizeJet4ExpandedFormBlob(streams.Blob, controls)
 	formProps, controlGroups := parseFormBlob(streams.Blob)
-	jet4FormProps, jet4ControlProps := parseJet4FormTextProperties(streams.Blob, controls)
-	jet4NumericProps := parseJet4FormNumericProperties(streams.Blob, controls)
-	jet4LabelProps := parseJet4FormLabelProperties(streams.Blob, controls)
-	jet4ComboBoxProps := parseJet4FormComboBoxProperties(streams.Blob, controls)
-	jet4ButtonProps := parseJet4FormButtonProperties(streams.Blob, controls)
-	jet4CheckBoxProps := parseJet4FormCheckBoxProperties(streams.Blob, controls)
-	jet4RectangleProps := parseJet4FormRectangleProperties(streams.Blob, controls)
-	jet4OptionGroupProps := parseJet4FormOptionGroupProperties(streams.Blob, controls)
-	jet4OptionButtonProps := parseJet4FormOptionButtonProperties(streams.Blob, controls)
-	jet4SubFormProps := parseJet4FormSubFormProperties(streams.Blob, controls)
-	jet4TabControlProps := parseJet4FormTabControlProperties(streams.Blob, controls)
-	jet4TabPageProps := parseJet4FormTabPageProperties(streams.Blob, controls)
-	jet4SectionProps := parseJet4FormSectionProperties(streams.Blob, controls)
-	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(streams.Blob, controls)
-	formProps = mergeFormProperties(formProps, jet4FormProps)
-	if defaultView, ok := parseJet4FormDefaultView(streams.Blob); ok {
-		formProps = mergeFormProperties(formProps, []FormProperty{{
+	jet4FormProps, jet4ControlProps := parseJet4FormTextProperties(jet4Data, controls)
+	if expandedJet4 {
+		jet4FormProps = mergeFormProperties(
+			parseJet4ExpandedFormTextProperties(streams.Blob), jet4FormProps)
+	}
+	jet4NumericProps := parseJet4FormNumericProperties(jet4Data, controls)
+	jet4LabelProps := parseJet4FormLabelProperties(jet4Data, controls)
+	jet4ComboBoxProps := parseJet4FormComboBoxProperties(jet4Data, controls)
+	jet4ButtonProps := parseJet4FormButtonProperties(jet4Data, controls)
+	jet4CheckBoxProps := parseJet4FormCheckBoxProperties(jet4Data, controls)
+	jet4RectangleProps := parseJet4FormRectangleProperties(jet4Data, controls)
+	jet4OptionGroupProps := parseJet4FormOptionGroupProperties(jet4Data, controls)
+	jet4OptionButtonProps := parseJet4FormOptionButtonProperties(jet4Data, controls)
+	jet4SubFormProps := parseJet4FormSubFormProperties(jet4Data, controls)
+	jet4TabControlProps := parseJet4FormTabControlProperties(jet4Data, controls)
+	jet4TabPageProps := parseJet4FormTabPageProperties(jet4Data, controls)
+	jet4SectionProps := parseJet4FormSectionProperties(jet4Data, controls)
+	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(jet4Data, controls)
+	if expandedJet4 {
+		// Access 2003 的展开记录在每个数值记录内保存控件 Name。物理顺序
+		// 解释器优先；按 Name 解析用于补齐没有被顺序配对器识别的记录。
+		expanded := parseJet4ExpandedNumericSet(streams.Blob, jet4Data, controls)
+		for name, value := range expanded.textBoxes {
+			if _, exists := jet4NumericProps[name]; !exists {
+				jet4NumericProps[name] = value
+			}
+		}
+		for name, value := range expanded.labels {
+			if _, exists := jet4LabelProps[name]; !exists {
+				jet4LabelProps[name] = value
+			}
+		}
+		for name, value := range expanded.comboBoxes {
+			if _, exists := jet4ComboBoxProps[name]; !exists {
+				jet4ComboBoxProps[name] = value
+			}
+		}
+		for name, value := range expanded.buttons {
+			if _, exists := jet4ButtonProps[name]; !exists {
+				jet4ButtonProps[name] = value
+			}
+		}
+		for name, value := range expanded.checkBoxes {
+			if _, exists := jet4CheckBoxProps[name]; !exists {
+				jet4CheckBoxProps[name] = value
+			}
+		}
+		for name, value := range expanded.rectangles {
+			// Rectangle 没有跨控件保存的数值尾，Name 是稳定边界。
+			jet4RectangleProps[name] = value
+		}
+		for name, value := range expanded.optionGroups {
+			if _, exists := jet4OptionGroupProps[name]; !exists {
+				jet4OptionGroupProps[name] = value
+			}
+		}
+		for name, value := range expanded.optionButtons {
+			if _, exists := jet4OptionButtonProps[name]; !exists {
+				jet4OptionButtonProps[name] = value
+			}
+		}
+		for name, value := range expanded.subForms {
+			if _, exists := jet4SubFormProps[name]; !exists {
+				jet4SubFormProps[name] = value
+			}
+		}
+		for name, value := range expanded.tabControls {
+			if _, exists := jet4TabControlProps[name]; !exists {
+				jet4TabControlProps[name] = value
+			}
+		}
+		for name, value := range expanded.tabPages {
+			if _, exists := jet4TabPageProps[name]; !exists {
+				jet4TabPageProps[name] = value
+			}
+		}
+		for name, value := range expanded.sections {
+			// Section 由 98/99/9A 类型及 Name 唯一确定，避免模板默认值
+			// 覆盖真实 Detail/FormHeader/FormFooter 记录。
+			jet4SectionProps[name] = value
+		}
+		for name, value := range expanded.geometries {
+			if _, exists := jet4Geometries[name]; !exists {
+				jet4Geometries[name] = value
+			}
+		}
+
+		// 0x0014 的头部本身也是展开标签流，不能把它按通用属性数组误读。
+		formProps = mergeFormProperties(jet4FormProps, nil)
+	} else {
+		formProps = mergeFormProperties(formProps, jet4FormProps)
+	}
+	if defaultView, ok := parseJet4FormDefaultView(jet4Data); ok {
+		defaultViewProperty := FormProperty{
 			ID:        0x0093,
 			Name:      FormPropertyIDToName(0x0093),
 			ValueType: "Byte",
 			Value:     strconv.Itoa(defaultView),
-		}})
+		}
+		if expandedJet4 {
+			formProps = mergeFormProperties([]FormProperty{defaultViewProperty}, formProps)
+		} else {
+			formProps = mergeFormProperties(formProps, []FormProperty{defaultViewProperty})
+		}
 	}
 
 	content := &FormContent{
@@ -408,7 +564,13 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.Properties = controlGroups[groupIndex]
 			usedGroups[groupIndex] = true
 		}
-		parsed.Properties = mergeFormProperties(parsed.Properties, jet4ControlProps[strings.ToLower(control.Name)])
+		if expandedJet4 {
+			parsed.Properties = mergeFormProperties(
+				jet4ControlProps[strings.ToLower(control.Name)], parsed.Properties)
+		} else {
+			parsed.Properties = mergeFormProperties(
+				parsed.Properties, jet4ControlProps[strings.ToLower(control.Name)])
+		}
 		if numeric, ok := jet4NumericProps[strings.ToLower(control.Name)]; ok {
 			parsed.Properties = mergeFormProperties(parsed.Properties, numeric.formProperties())
 			parsed.Locked = numeric.Locked
@@ -692,8 +854,12 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	content.RecordSource = formPropertyText(content.Properties, 0x009C)
 	content.Caption = formPropertyText(content.Properties, 0x0011)
 	content.Sections = assignFormControlSections(content.Controls)
+	foundDetail := false
 	for _, section := range content.Sections {
 		if section.Type != "Detail" {
+			continue
+		}
+		if foundDetail && len(section.Properties) == 0 {
 			continue
 		}
 		// AccessExport 的 Form.Height 与 Form.BackGroundColor 均来自主体 Detail Section。
@@ -701,7 +867,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		content.BackColor = section.BackColor
 		content.BackColorValue = section.BackColorValue
 		content.BackGroundColor = section.BackGroundColor
-		break
+		foundDetail = true
 	}
 	return content, nil
 }

@@ -188,6 +188,21 @@ static void mdbgo_free_access_object_data_array_inner(mdbgo_access_object_data_a
     out->count = 0;
 }
 
+static void mdbgo_free_access_storage_entry_array_inner(mdbgo_access_storage_entry_array_t *out) {
+    size_t i;
+
+    if (!out) {
+        return;
+    }
+    for (i = 0; i < out->count; i++) {
+        free(out->values[i].name);
+        free(out->values[i].data);
+    }
+    free(out->values);
+    out->values = NULL;
+    out->count = 0;
+}
+
 static void mdbgo_free_int_array_inner(mdbgo_int_array_t *out) {
     if (!out) {
         return;
@@ -316,6 +331,23 @@ void mdbgo_close(mdbgo_db_t *db) {
     }
 
     free(db);
+}
+
+int mdbgo_get_file_format(
+    mdbgo_db_t *db,
+    int *out_version,
+    size_t *out_page_size,
+    char *err,
+    size_t err_len
+) {
+    if (!db || !db->mdb || !db->mdb->f || !db->mdb->fmt || !out_version || !out_page_size) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+
+    *out_version = (int)db->mdb->f->jet_version;
+    *out_page_size = (size_t)db->mdb->fmt->pg_size;
+    return 0;
 }
 
 int mdbgo_list_tables(mdbgo_db_t *db, char ***out_names, size_t *out_count, char *err, size_t err_len) {
@@ -1439,6 +1471,188 @@ fail:
 
 void mdbgo_free_access_object_data_array(mdbgo_access_object_data_array_t *out) {
     mdbgo_free_access_object_data_array_inner(out);
+}
+
+int mdbgo_access_object_storage_kind(mdbgo_db_t *db, int *out_kind, char *err, size_t err_len) {
+    GPtrArray *catalog;
+    int has_access_storage = 0;
+    guint i;
+
+    if (!db || !db->mdb || !out_kind) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+    *out_kind = 0;
+
+    catalog = mdb_read_catalog(db->mdb, MDB_ANY);
+    if (!catalog) {
+        mdbgo_set_error(err, err_len, "failed to read catalog");
+        return -1;
+    }
+    for (i = 0; i < catalog->len; i++) {
+        MdbCatalogEntry *entry = (MdbCatalogEntry *)g_ptr_array_index(catalog, i);
+        if (!entry) {
+            continue;
+        }
+        if (!g_ascii_strcasecmp(entry->object_name, "MSysAccessObjects")) {
+            *out_kind = 1;
+            return 0;
+        }
+        if (!g_ascii_strcasecmp(entry->object_name, "MSysAccessStorage")) {
+            has_access_storage = 1;
+        }
+    }
+    if (has_access_storage) {
+        *out_kind = 2;
+    }
+    return 0;
+}
+
+int mdbgo_read_access_storage_entries(
+    mdbgo_db_t *db,
+    mdbgo_access_storage_entry_array_t *out,
+    char *err,
+    size_t err_len
+) {
+    MdbTableDef *table = NULL;
+    MdbColumn *col_lv = NULL;
+    mdbgo_access_storage_entry_t *values = NULL;
+    char *id_buf = NULL;
+    char *parent_id_buf = NULL;
+    char *type_buf = NULL;
+    char *name_buf = NULL;
+    unsigned char *lv_buf = NULL;
+    int lv_len_dummy = 0;
+    int idx_lv;
+    size_t count = 0;
+    size_t cap = 0;
+
+    if (!db || !db->mdb || !out) {
+        mdbgo_set_error(err, err_len, "invalid arguments");
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    table = mdb_read_table_by_name(db->mdb, (gchar *)"MSysAccessStorage", MDB_ANY);
+    if (!table) {
+        mdbgo_set_error(err, err_len, "failed to read MSysAccessStorage");
+        goto fail;
+    }
+    if (!mdb_read_columns(table)) {
+        mdbgo_set_error(err, err_len, "failed to read MSysAccessStorage columns");
+        goto fail;
+    }
+
+    id_buf = (char *)calloc(1, db->mdb->bind_size);
+    parent_id_buf = (char *)calloc(1, db->mdb->bind_size);
+    type_buf = (char *)calloc(1, db->mdb->bind_size);
+    name_buf = (char *)calloc(1, db->mdb->bind_size);
+    lv_buf = (unsigned char *)calloc(1, db->mdb->bind_size);
+    if (!id_buf || !parent_id_buf || !type_buf || !name_buf || !lv_buf) {
+        mdbgo_set_error(err, err_len, "out of memory");
+        goto fail;
+    }
+
+    if (mdb_bind_column_by_name(table, (gchar *)"Id", id_buf, NULL) == -1 ||
+        mdb_bind_column_by_name(table, (gchar *)"ParentId", parent_id_buf, NULL) == -1 ||
+        mdb_bind_column_by_name(table, (gchar *)"Type", type_buf, NULL) == -1 ||
+        mdb_bind_column_by_name(table, (gchar *)"Name", name_buf, NULL) == -1) {
+        mdbgo_set_error(err, err_len, "failed to bind MSysAccessStorage metadata columns");
+        goto fail;
+    }
+    idx_lv = mdb_bind_column_by_name(table, (gchar *)"Lv", lv_buf, &lv_len_dummy);
+    if (idx_lv == -1) {
+        mdbgo_set_error(err, err_len, "failed to bind MSysAccessStorage Lv");
+        goto fail;
+    }
+    col_lv = (MdbColumn *)g_ptr_array_index(table->columns, (guint)(idx_lv - 1));
+    if (!col_lv || col_lv->col_type != MDB_OLE) {
+        mdbgo_set_error(err, err_len, "invalid MSysAccessStorage Lv column metadata");
+        goto fail;
+    }
+
+    mdb_rewind_table(table);
+    while (mdb_fetch_row(table)) {
+        mdbgo_access_storage_entry_t *item;
+
+        if (count == cap) {
+            size_t new_cap = (cap == 0) ? 128 : (cap * 2);
+            mdbgo_access_storage_entry_t *new_values =
+                (mdbgo_access_storage_entry_t *)realloc(values, new_cap * sizeof(*values));
+            if (!new_values) {
+                mdbgo_set_error(err, err_len, "out of memory");
+                goto fail;
+            }
+            values = new_values;
+            cap = new_cap;
+        }
+
+        item = &values[count];
+        memset(item, 0, sizeof(*item));
+        item->id = atoi(id_buf);
+        item->parent_id = atoi(parent_id_buf);
+        item->entry_type = atoi(type_buf);
+        item->name = strdup(name_buf);
+        if (!item->name) {
+            mdbgo_set_error(err, err_len, "out of memory");
+            goto fail;
+        }
+        count++;
+
+        if (!col_lv->is_null && col_lv->cur_value_len > 0) {
+            size_t ole_len = 0;
+            void *ole;
+
+            if (col_lv->cur_value_len < MDB_MEMO_OVERHEAD) {
+                mdbgo_set_error(
+                    err,
+                    err_len,
+                    "invalid MSysAccessStorage Lv value for id=%d: len=%d",
+                    item->id,
+                    col_lv->cur_value_len);
+                goto fail;
+            }
+            ole = mdb_ole_read_full(db->mdb, col_lv, &ole_len);
+            if (!ole) {
+                mdbgo_set_error(err, err_len, "failed to read MSysAccessStorage Lv for id=%d", item->id);
+                goto fail;
+            }
+            if (ole_len > 0) {
+                item->data = (unsigned char *)ole;
+                item->len = ole_len;
+            } else {
+                free(ole);
+            }
+        }
+    }
+
+    free(id_buf);
+    free(parent_id_buf);
+    free(type_buf);
+    free(name_buf);
+    free(lv_buf);
+    mdb_free_tabledef(table);
+    out->values = values;
+    out->count = count;
+    return 0;
+
+fail:
+    free(id_buf);
+    free(parent_id_buf);
+    free(type_buf);
+    free(name_buf);
+    free(lv_buf);
+    if (table) {
+        mdb_free_tabledef(table);
+    }
+    out->values = values;
+    out->count = count;
+    mdbgo_free_access_storage_entry_array_inner(out);
+    return -1;
+}
+
+void mdbgo_free_access_storage_entries(mdbgo_access_storage_entry_array_t *out) {
+    mdbgo_free_access_storage_entry_array_inner(out);
 }
 
 int mdbgo_list_access_object_ids(mdbgo_db_t *db, mdbgo_int_array_t *out, char *err, size_t err_len) {
