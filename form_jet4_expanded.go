@@ -403,6 +403,8 @@ func parseJet4ExpandedNumericSet(
 	}
 
 	buttonDefaultHeight := parseJet4ButtonDefaultHeight(normalized)
+	optionButtonDefaultHeight := parseJet4OptionButtonDefaultHeight(normalized)
+	comboBoxDefaultWidth := parseJet4ComboBoxDefaultWidth(normalized)
 	rectangleDefaultHeight := parseJet4RectangleDefaultHeight(normalized)
 	labelNames := make([]string, 0)
 	labelValues := make(map[int]jet4LabelNumericProperties)
@@ -448,7 +450,8 @@ func parseJet4ExpandedNumericSet(
 				result.buttons[name] = props
 			}
 		case 0x69:
-			if props, ok := parseJet4OptionButtonNumericTail(record.compact); ok {
+			if props, ok := parseJet4OptionButtonNumericTailWithDefaultHeight(
+				record.compact, optionButtonDefaultHeight); ok {
 				result.optionButtons[name] = props
 			}
 		case 0x6B:
@@ -461,7 +464,8 @@ func parseJet4ExpandedNumericSet(
 				textBoxNames = append(textBoxNames, name)
 			}
 		case 0x6F:
-			if props, ok := parseJet4ComboBoxNumericTail(record.compact); ok {
+			if props, ok := parseJet4ComboBoxNumericTailWithDefaultWidth(
+				record.compact, comboBoxDefaultWidth); ok {
 				result.comboBoxes[name] = props
 			}
 		case 0x70:

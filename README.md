@@ -193,9 +193,9 @@ db, err := mdbgo.OpenWithOptions("example.mdb", mdbgo.OpenOptions{
 MDBGO_EXPORT_FORM_NAME=f_abia_master \
 go test -run TestExportFormAsAccessJSON -v -count=1
 
-MDBGO_TEST_DB=testdb/mdbs/dms-0723.mdb \
-MDBGO_EXPORT_FORM_NAME=f_cvm \
-MDBGO_EXPORT_FORM_OUTPUT=testdb/f_cvm_mdbgo.json \
+MDBGO_TEST_DB=testdb/mdbs/eIT.mdb \
+MDBGO_EXPORT_FORM_NAME=f_act_branch_query \
+MDBGO_EXPORT_FORM_OUTPUT=testdb/f_act_branch_query_mdbgo.json \
 go test -run TestExportFormAsAccessJSON -v -count=1
 ```
 

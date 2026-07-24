@@ -103,7 +103,7 @@ func TestAccess2003FormContentMatchesAccess2000(t *testing.T) {
 				control.Name, control.SourceObject, expected.SourceObject)
 		}
 	}
-	exportJSON := func(t *testing.T, path string) []byte {
+	exportJSON := func(t *testing.T, path, formName string) []byte {
 		t.Helper()
 		db, err := Open(path)
 		if err != nil {
@@ -114,18 +114,22 @@ func TestAccess2003FormContentMatchesAccess2000(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadAccessObjectEntries(%s) failed: %v", path, err)
 		}
-		exported, err := newAccessRawJSONBuilder(entries).buildForm("f_doc_query")
+		exported, err := newAccessRawJSONBuilder(entries).buildForm(formName)
 		if err != nil {
-			t.Fatalf("buildForm(%s, f_doc_query) failed: %v", path, err)
+			t.Fatalf("buildForm(%s, %s) failed: %v", path, formName, err)
 		}
 		data, err := marshalAccessRawJSONIndent(exported)
 		if err != nil {
-			t.Fatalf("marshal f_doc_query from %s failed: %v", path, err)
+			t.Fatalf("marshal %s from %s failed: %v", formName, path, err)
 		}
 		return data
 	}
-	if wantJSON, gotJSON := exportJSON(t, access2000Path), exportJSON(t, access2003Path); !bytes.Equal(gotJSON, wantJSON) {
-		t.Fatal("Access 2003 f_doc_query JSON differs from Access 2000")
+	for _, formName := range []string{"f_doc_query", "f_oem_hbl"} {
+		wantJSON := exportJSON(t, access2000Path, formName)
+		gotJSON := exportJSON(t, access2003Path, formName)
+		if !bytes.Equal(gotJSON, wantJSON) {
+			t.Fatalf("Access 2003 %s JSON differs from Access 2000", formName)
+		}
 	}
 
 	openContents := func(t *testing.T, path string) []FormContent {
@@ -154,13 +158,6 @@ func TestAccess2003FormContentMatchesAccess2000(t *testing.T) {
 	mismatchesByForm := make(map[string]int)
 	samples := make([]string, 0, 20)
 	totalControls := 0
-	// Access 2003 为这两个尾部 ComboBox 多保存了一条显式数值记录；
-	// Access 2000 的紧凑流只有 20 条记录对应 21 个 ComboBox。这里保留
-	// 2003 文件中更完整的布局，而不把它误判为展开格式解码失败。
-	explicit2003Geometry := map[string]bool{
-		"f_oem_hbl\x00combobox\x00notify_id": true,
-		"f_oem_hbl\x00combobox\x00status_id": true,
-	}
 	for formIndex := range wantContents {
 		wantForm := &wantContents[formIndex]
 		gotForm := &gotContents[formIndex]
@@ -202,11 +199,6 @@ func TestAccess2003FormContentMatchesAccess2000(t *testing.T) {
 			if gotControl.Left == wantControl.Left && gotControl.Top == wantControl.Top &&
 				gotControl.Width == wantControl.Width && gotControl.Height == wantControl.Height &&
 				gotControl.HasGeometry == wantControl.HasGeometry {
-				continue
-			}
-			differenceKey := strings.ToLower(gotForm.FormName) + "\x00" +
-				strings.ToLower(gotControl.Type) + "\x00" + strings.ToLower(gotControl.Name)
-			if explicit2003Geometry[differenceKey] {
 				continue
 			}
 			mismatchesByType[gotControl.Type]++

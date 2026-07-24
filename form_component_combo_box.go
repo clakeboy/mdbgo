@@ -1,10 +1,13 @@
 package mdbgo
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+const jet4ComboBoxBuiltInDefaultWidth = 1440
 
 func parseJet4ComboBoxTextProperties(control FormControlInfo, fields []jet4TaggedTextField) []FormProperty {
 	var props []FormProperty
@@ -113,10 +116,15 @@ func parseJet4FormComboBoxProperties(data []byte, controls []FormControlInfo) ma
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
+	prefixEnd := len(data)
+	if len(blocks) > 0 {
+		prefixEnd = blocks[0].offset
+	}
+	defaultWidth := parseJet4ComboBoxDefaultWidth(data[:prefixEnd])
 	numericRecords := make([]jet4ComboBoxNumericProperties, 0, len(comboBoxes))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4ComboBoxNumericTail(tail)
+		props, ok := parseJet4ComboBoxNumericTailWithDefaultWidth(tail, defaultWidth)
 		if ok {
 			numericRecords = append(numericRecords, props)
 		}
@@ -127,12 +135,68 @@ func parseJet4FormComboBoxProperties(data []byte, controls []FormControlInfo) ma
 	return result
 }
 
+// parseJet4ComboBoxDefaultWidth 读取命名控件区之前的窗体级 ComboBox 模板。
+// 模板以 FD 6F 00 开始；若模板省略 0x65 Width，则使用 Access 内建的
+// 1440-twip 默认宽度。
+func parseJet4ComboBoxDefaultWidth(prefix []byte) int {
+	signature := []byte{0xFD, 0x6F, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		width := jet4ComboBoxBuiltInDefaultWidth
+		for pos := recordPos + len(signature); pos < len(prefix) && pos < recordPos+96; {
+			tag := prefix[pos]
+			switch tag {
+			case 0x31, 0x32, 0x35, 0x39:
+				if pos+2 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				pos += 2
+			case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x6E:
+				if pos+3 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if tag == 0x65 {
+					value := int(le16(prefix[pos+1:]))
+					if value > 0 && value <= 32767 {
+						width = value
+					}
+				}
+				pos += 3
+			case 0x9C, 0x9D, 0xA0:
+				if pos+5 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				pos += 5
+			default:
+				pos = len(prefix)
+			}
+		}
+		return width
+	}
+	return jet4ComboBoxBuiltInDefaultWidth
+}
+
 func parseJet4ComboBoxNumericTail(tail []byte) (jet4ComboBoxNumericProperties, bool) {
+	return parseJet4ComboBoxNumericTailWithDefaultWidth(tail, 0)
+}
+
+func parseJet4ComboBoxNumericTailWithDefaultWidth(
+	tail []byte,
+	defaultWidth int,
+) (jet4ComboBoxNumericProperties, bool) {
 	result := jet4ComboBoxNumericProperties{
 		ListRows:    8,
 		BoundColumn: 1,
 		BackStyle:   1,
 		Visible:     true,
+		Geometry:    formControlGeometry{Width: defaultWidth},
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -158,7 +222,7 @@ func parseJet4ComboBoxNumericTail(tail []byte) (jet4ComboBoxNumericProperties, b
 		}
 	}
 
-	foundWidth := false
+	foundWidth := defaultWidth > 0
 	foundHeight := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]

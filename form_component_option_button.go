@@ -1,13 +1,16 @@
 package mdbgo
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
 )
 
+const jet4OptionButtonBuiltInDefaultHeight = 240
+
 // parseJet4OptionButtonTextProperties 解析 OptionButton 的字符串属性。
-// OptionButton 与 CheckBox 使用相同的 0xDD ControlSource 和 0xF0 Tag 标签。
+// 0xDD/0xDE/0xF0 分别保存 ControlSource、StatusBarText 和 Tag。
 func parseJet4OptionButtonTextProperties(control FormControlInfo, fields []jet4TaggedTextField) []FormProperty {
 	var props []FormProperty
 	for _, field := range fields {
@@ -16,6 +19,8 @@ func parseJet4OptionButtonTextProperties(control FormControlInfo, fields []jet4T
 			if source, ok := normalizeControlSource(field.Value, control.Name); ok {
 				props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x001B, source)})
 			}
+		case 0xDE:
+			props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x0087, field.Value)})
 		case 0xF0:
 			props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x010A, field.Value)})
 		}
@@ -122,10 +127,15 @@ func parseJet4FormOptionButtonProperties(data []byte, controls []FormControlInfo
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
+	prefixEnd := len(data)
+	if len(blocks) > 0 {
+		prefixEnd = blocks[0].offset
+	}
+	defaultHeight := parseJet4OptionButtonDefaultHeight(data[:prefixEnd])
 	numericRecords := make([]jet4OptionButtonNumericProperties, 0, len(optionButtons))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4OptionButtonNumericTail(tail)
+		props, ok := parseJet4OptionButtonNumericTailWithDefaultHeight(tail, defaultHeight)
 		if ok {
 			numericRecords = append(numericRecords, props)
 		}
@@ -136,12 +146,75 @@ func parseJet4FormOptionButtonProperties(data []byte, controls []FormControlInfo
 	return result
 }
 
+// parseJet4OptionButtonDefaultHeight 读取命名控件区之前的窗体级 OptionButton 模板。
+// 模板以 FD 69 00 开始；若模板省略 0x63 Height，则使用 Access 内建的
+// 240-twip 默认高度。
+func parseJet4OptionButtonDefaultHeight(prefix []byte) int {
+	signature := []byte{0xFD, 0x69, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		height := jet4OptionButtonBuiltInDefaultHeight
+		isTemplate := false
+		for pos := recordPos + len(signature); pos < len(prefix) && pos < recordPos+96; {
+			tag := prefix[pos]
+			switch tag {
+			case 0x31, 0x32, 0x33, 0x34:
+				if pos+2 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if tag == 0x31 {
+					isTemplate = true
+				}
+				pos += 2
+			case 0x60, 0x61, 0x62, 0x63, 0x67, 0x68:
+				if pos+3 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				if tag == 0x63 {
+					value := int(le16(prefix[pos+1:]))
+					if value > 0 && value <= 32767 {
+						height = value
+					}
+				}
+				pos += 3
+			case 0x9C, 0x9D:
+				if pos+5 > len(prefix) {
+					pos = len(prefix)
+					continue
+				}
+				pos += 5
+			default:
+				pos = len(prefix)
+			}
+		}
+		if isTemplate {
+			return height
+		}
+		searchPos = recordPos + len(signature)
+	}
+	return jet4OptionButtonBuiltInDefaultHeight
+}
+
 func parseJet4OptionButtonNumericTail(tail []byte) (jet4OptionButtonNumericProperties, bool) {
-	// Access 会省略默认的 180-twip 高度；这种记录仍是完整的
-	// OptionButton，不能因为没有 0x63 就丢弃并造成后续控件错位。
+	return parseJet4OptionButtonNumericTailWithDefaultHeight(
+		tail, jet4OptionButtonBuiltInDefaultHeight)
+}
+
+func parseJet4OptionButtonNumericTailWithDefaultHeight(
+	tail []byte,
+	defaultHeight int,
+) (jet4OptionButtonNumericProperties, bool) {
+	// Access 会省略默认高度；这种记录仍是完整的 OptionButton，不能因为
+	// 没有 0x63 就丢弃并造成后续控件错位。具体默认值由文件格式调用方传入。
 	result := jet4OptionButtonNumericProperties{
 		Visible:  true,
-		Geometry: formControlGeometry{Height: 180},
+		Geometry: formControlGeometry{Height: defaultHeight},
 	}
 	if len(tail) < 12 {
 		return result, false

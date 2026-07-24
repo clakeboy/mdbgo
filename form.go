@@ -458,14 +458,13 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			}
 		}
 		for name, value := range expanded.comboBoxes {
-			if _, exists := jet4ComboBoxProps[name]; !exists {
-				jet4ComboBoxProps[name] = value
-			}
+			// Access 2003 展开数值记录直接携带控件名，优先级高于紧凑
+			// 兼容路径的物理顺序配对，避免中间多一条记录后连续错位。
+			jet4ComboBoxProps[name] = value
 		}
 		for name, value := range expanded.buttons {
-			if _, exists := jet4ButtonProps[name]; !exists {
-				jet4ButtonProps[name] = value
-			}
+			// Access 2003 展开记录携带控件名，优先于物理邻接配对。
+			jet4ButtonProps[name] = value
 		}
 		for name, value := range expanded.checkBoxes {
 			if _, exists := jet4CheckBoxProps[name]; !exists {
@@ -482,9 +481,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			}
 		}
 		for name, value := range expanded.optionButtons {
-			if _, exists := jet4OptionButtonProps[name]; !exists {
-				jet4OptionButtonProps[name] = value
-			}
+			jet4OptionButtonProps[name] = value
 		}
 		for name, value := range expanded.subForms {
 			if _, exists := jet4SubFormProps[name]; !exists {
@@ -539,11 +536,25 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		Properties:  formProps,
 		Controls:    make([]FormControlContent, 0, len(controls)+len(controlGroups)),
 	}
+	expandedControlNames := make(map[int]string)
+	if expandedJet4 {
+		for _, record := range parseJet4ExpandedNamedRecords(streams.Blob) {
+			if record.name != "" {
+				expandedControlNames[record.offset] = record.name
+			}
+		}
+	}
 	usedGroups := make([]bool, len(controlGroups))
 	for i, control := range controls {
 		controlName := control.Name
-		if control.Type == "TextBox" && i < len(controlOffsets) {
-			controlName = jet4ControlNameAt(streams.Blob, controlOffsets[i], control.Name)
+		if i < len(controlOffsets) {
+			if expandedJet4 {
+				if name := expandedControlNames[controlOffsets[i]]; strings.EqualFold(name, control.Name) {
+					controlName = name
+				}
+			} else if control.Type == "TextBox" {
+				controlName = jet4ControlNameAt(streams.Blob, controlOffsets[i], control.Name)
+			}
 		}
 		parsed := FormControlContent{
 			Name:       controlName,

@@ -816,14 +816,22 @@ func TestExportFormAsAccessJSON(t *testing.T) {
 	t.Logf("form=%q JSON written to %s (%d bytes)", formName, outputPath, len(data))
 }
 
-func TestBuildAccessJSONFOemHblQuery(t *testing.T) {
-	testBuildAccessJSONAgainstRawFixture(t,
-		"f_oem_hbl_query", filepath.Join("testdb", "f_oem_hbl_query_org.json"))
+func TestBuildAccessJSONFOemHbl(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "mpci_2003.mdb"),
+		"f_oem_hbl", filepath.Join("testdb", "f_oem_hbl_org.json"))
 }
 
-func TestBuildAccessJSONFOemHbl(t *testing.T) {
-	testBuildAccessJSONAgainstRawFixture(t,
-		"f_oem_hbl", filepath.Join("testdb", "f_oem_hbl_org.json"))
+func TestBuildAccessJSONFDocUpload(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "mpci_2003.mdb"),
+		"f_doc_upload", filepath.Join("testdb", "f_doc_upload_org.json"))
+}
+
+func TestBuildAccessJSONFActBranchQuery(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "eIT.mdb"),
+		"f_act_branch_query", filepath.Join("testdb", "f_act_branch_query_org.json"))
 }
 
 func TestBuildAccessJSONFAbiEntry(t *testing.T) {
@@ -912,7 +920,12 @@ func TestBuildControlSequenceKeepsControlsAboveTabFrameAtRoot(t *testing.T) {
 
 func testBuildAccessJSONAgainstRawFixture(t *testing.T, formName, fixturePath string) {
 	t.Helper()
-	dbPath := filepath.Join("testdb", "mdbs", "dms.mdb")
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "dms.mdb"), formName, fixturePath)
+}
+
+func testBuildAccessJSONAgainstRawFixtureAtDB(t *testing.T, dbPath, formName, fixturePath string) {
+	t.Helper()
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Skipf("skip integration test, db file not found: %s, err=%v", dbPath, err)
 	}

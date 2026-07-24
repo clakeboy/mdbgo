@@ -203,20 +203,30 @@ func parseJet4ButtonNumericTail(tail []byte) (jet4ButtonNumericProperties, bool)
 		return result, false
 	}
 
-	recordPos := -1
+	payloadPos := -1
 	for pos := 0; pos+3 <= len(tail) && pos < 12; pos++ {
 		if tail[pos] == 0xFD && tail[pos+1] == 0x68 && tail[pos+2] == 0x00 {
-			recordPos = pos
+			payloadPos = pos + 3
 			break
 		}
 	}
-	if recordPos < 0 {
+	// 第一个 Button 可能紧邻 Section 边界；此时记录以 FF 掩码开头，
+	// 子类型 68 00 后才是 Button 数值属性。
+	if payloadPos < 0 && tail[0] == 0xFF {
+		for pos := 1; pos+2 <= len(tail) && pos < 8; pos++ {
+			if tail[pos] == 0x68 && tail[pos+1] == 0x00 {
+				payloadPos = pos + 2
+				break
+			}
+		}
+	}
+	if payloadPos < 0 {
 		return result, false
 	}
 	// Height is optional in the compact record. When 0x63 is absent, Access
 	// keeps the 360-twip CommandButton default. The 0x31 mask also describes
 	// unrelated properties, so values such as F7 must not imply a taller button.
-	for pos := recordPos + 3; pos < len(tail); {
+	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
 		case 0x60, 0x61, 0x62, 0x63, 0x69:

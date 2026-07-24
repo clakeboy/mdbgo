@@ -219,12 +219,13 @@ func parseJet4LabelNumericTail(tail []byte) (jet4LabelNumericProperties, bool) {
 		tag := tail[pos]
 		switch tag {
 		case 0x60, 0x61, 0x62, 0x63, 0x64:
-			value := int(le16(tail[pos+1:]))
+			rawValue := le16(tail[pos+1:])
+			value := int(rawValue)
 			switch tag {
 			case 0x60:
-				result.Geometry.Left = value
+				result.Geometry.Left = int(int16(rawValue))
 			case 0x61:
-				result.Geometry.Top = value
+				result.Geometry.Top = int(int16(rawValue))
 			case 0x62:
 				result.Geometry.Width = value
 			case 0x63:

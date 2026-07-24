@@ -1308,6 +1308,26 @@ func TestParseJet4TextBoxNumericTailNativeFlags(t *testing.T) {
 	}
 }
 
+func TestParseJet4TextBoxNumericTailSignedPosition(t *testing.T) {
+	tail := []byte{
+		0xFF, 0x0E, 0x00, 0x6D, 0x00, 0x0A, 0x37, 0x5D, 0x3B, 0x02,
+		0x60, 0xF1, 0xFF, 0x62, 0x0C, 0x03, 0x63, 0x20, 0x01,
+		0x65, 0x56, 0x04, 0x66, 0x02, 0x00, 0x69, 0x09, 0x00,
+		0x9C, 0xFF, 0xFF, 0xFF, 0x00, 0x9D, 0x00, 0x00, 0x00, 0x00,
+		0x9F, 0x00, 0x00, 0xFF, 0x00, 0xDC, 0x26,
+	}
+	got, ok := parseJet4TextBoxNumericTail(tail)
+	if !ok {
+		t.Fatal("parseJet4TextBoxNumericTail rejected signed Left position")
+	}
+	if got.Geometry != (formControlGeometry{Left: -15, Width: 780, Height: 288}) {
+		t.Fatalf("TextBox geometry=%+v want Left=-15 Width=780 Height=288", got.Geometry)
+	}
+	if !got.Underline || got.TextAlign != 2 || got.ForeColorValue != 0x00FF0000 {
+		t.Fatalf("TextBox signed-position properties=%+v", got)
+	}
+}
+
 func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 	tail := []byte{
 		0xFD, 0x6F, 0x00, 0x01, 0x32, 0x00, 0x35, 0x55, 0x44, 0x03,
@@ -1369,6 +1389,63 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		got.Geometry != (formControlGeometry{Width: 900, Height: 285}) {
 		t.Fatalf("default-fields ComboBox numeric properties=%+v ok=%v", got, ok)
 	}
+
+	omittedDefaultWidthTail := []byte{
+		0xFD, 0x6F, 0x00,
+		0x60, 0x02, 0x00,
+		0x61, 0x0C, 0x00,
+		0x62, 0x70, 0x08,
+		0x63, 0x5C, 0x1C,
+		0x64, 0x64, 0x05,
+		0x66, 0x2C, 0x01,
+		0x6E, 0x21, 0x00,
+		0x9C, 0x01, 0x00, 0x00, 0x00,
+	}
+	if _, ok = parseJet4ComboBoxNumericTail(omittedDefaultWidthTail); ok {
+		t.Fatal("compact ComboBox parser accepted omitted width without a format default")
+	}
+	got, ok = parseJet4ComboBoxNumericTailWithDefaultWidth(omittedDefaultWidthTail, 1440)
+	if !ok || got.BoundColumn != 2 || got.TabIndex != 33 ||
+		got.Geometry != (formControlGeometry{Left: 7260, Top: 1380, Width: 1440, Height: 300}) {
+		t.Fatalf("default-width ComboBox numeric properties=%+v ok=%v", got, ok)
+	}
+}
+
+func TestParseJet4ComboBoxDefaultWidth(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix []byte
+		want   int
+	}{
+		{
+			name:   "no ComboBox template",
+			prefix: []byte{0xFD, 0x68, 0x00, 0x63, 0xA4, 0x01},
+			want:   jet4ComboBoxBuiltInDefaultWidth,
+		},
+		{
+			name: "template omits width",
+			prefix: []byte{
+				0xFD, 0x6F, 0x00, 0x32, 0x02, 0x66, 0x0E, 0x01,
+				0x9D, 0x05, 0x00, 0x00, 0x80, 0xA0, 0x08, 0x00, 0x00, 0x80,
+			},
+			want: jet4ComboBoxBuiltInDefaultWidth,
+		},
+		{
+			name: "template has explicit width",
+			prefix: []byte{
+				0xFD, 0x6F, 0x00, 0x32, 0x02,
+				0x65, 0x84, 0x03, 0x66, 0x0E, 0x01,
+			},
+			want: 900,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseJet4ComboBoxDefaultWidth(tt.prefix); got != tt.want {
+				t.Fatalf("parseJet4ComboBoxDefaultWidth()=%d want=%d", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestReadFormContentFAbiaMasterButtonTip(t *testing.T) {
@@ -1414,6 +1491,24 @@ func TestParseJet4ButtonNumericTail(t *testing.T) {
 				BackColor: "#ffffff", BackColorValue: 16777215,
 				Geometry: formControlGeometry{Left: 11040, Top: 570, Width: 1200, Height: 360}, HasGeometry: true,
 				HasExplicitHeight: true,
+			},
+		},
+		{
+			name: "section boundary prefix",
+			tail: []byte{
+				0xFF, 0x0C, 0x00, 0x68, 0x00, 0x09, 0x31, 0x55,
+				0x60, 0x58, 0x11,
+				0x61, 0x2C, 0x01,
+				0x62, 0x74, 0x04,
+				0x9D, 0x80, 0x00, 0x00, 0x00,
+			},
+			want: jet4ButtonNumericProperties{
+				BackStyle: 1,
+				BackColor: "#ffffff", BackColorValue: 16777215,
+				Geometry: formControlGeometry{
+					Left: 4440, Top: 300, Width: 1140, Height: 360,
+				},
+				HasGeometry: true,
 			},
 		},
 		{
@@ -1650,6 +1745,7 @@ func TestParseJet4OptionButtonTextProperties(t *testing.T) {
 		FormControlInfo{Name: "choice", Type: "OptionButton"},
 		[]jet4TaggedTextField{
 			{Tag: 0xDD, Value: "status_id"},
+			{Tag: 0xDE, Value: "FCL"},
 			{Tag: 0xF0, Value: "choice_tag"},
 		},
 	)
@@ -1658,6 +1754,9 @@ func TestParseJet4OptionButtonTextProperties(t *testing.T) {
 	}
 	if got := formPropertyText(props, 0x010A); got != "choice_tag" {
 		t.Fatalf("OptionButton Tag=%q want=choice_tag", got)
+	}
+	if got := formPropertyText(props, 0x0087); got != "FCL" {
+		t.Fatalf("OptionButton StatusBarText=%q want=FCL", got)
 	}
 }
 
@@ -1716,7 +1815,10 @@ func TestParseJet4OptionButtonNumericTail(t *testing.T) {
 			},
 			want: jet4OptionButtonNumericProperties{
 				OptionValue: 1, HasOptionValue: true, Visible: true,
-				Geometry:    formControlGeometry{Left: 10440, Top: 780, Width: 240, Height: 180},
+				Geometry: formControlGeometry{
+					Left: 10440, Top: 780, Width: 240,
+					Height: jet4OptionButtonBuiltInDefaultHeight,
+				},
 				HasGeometry: true,
 			},
 		},
@@ -1729,6 +1831,43 @@ func TestParseJet4OptionButtonNumericTail(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("OptionButton numeric properties=%+v want=%+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseJet4OptionButtonDefaultHeight(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix []byte
+		want   int
+	}{
+		{
+			name:   "no OptionButton template",
+			prefix: []byte{0xFD, 0x68, 0x00, 0x63, 0xA4, 0x01},
+			want:   jet4OptionButtonBuiltInDefaultHeight,
+		},
+		{
+			name: "template omits height",
+			prefix: []byte{
+				0xFD, 0x69, 0x00, 0x31, 0x02,
+				0x67, 0xE6, 0x00, 0x68, 0xE2, 0xFF,
+			},
+			want: jet4OptionButtonBuiltInDefaultHeight,
+		},
+		{
+			name: "template has explicit height",
+			prefix: []byte{
+				0xFD, 0x69, 0x00, 0x31, 0x02,
+				0x63, 0xB4, 0x00, 0x67, 0xE6, 0x00,
+			},
+			want: 180,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseJet4OptionButtonDefaultHeight(tt.prefix); got != tt.want {
+				t.Fatalf("parseJet4OptionButtonDefaultHeight()=%d want=%d", got, tt.want)
 			}
 		})
 	}
@@ -2476,6 +2615,25 @@ func TestNormalizeControlSourcePreservesFullNativeIdentifier(t *testing.T) {
 }
 
 func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
+	sectionBoundaryTail := []byte{
+		0xFF, 0x0E, 0x00, 0x64, 0x00, 0x01, 0x35, 0x5D, 0x37, 0x02,
+		0x60, 0xF1, 0xFF, 0x62, 0x1B, 0x03, 0x63, 0x1D, 0x01,
+		0x65, 0x90, 0x01, 0x9C, 0x33, 0x33, 0x33, 0x00,
+		0x9D, 0xFF, 0xFF, 0xFF, 0x00, 0xDC, 0x12,
+	}
+	signedPosition, ok := parseJet4LabelNumericTail(sectionBoundaryTail)
+	if !ok {
+		t.Fatal("parseJet4LabelNumericTail rejected signed Left position")
+	}
+	if signedPosition.Geometry != (formControlGeometry{Left: -15, Width: 795, Height: 285}) {
+		t.Fatalf("Label geometry=%+v want Left=-15 Width=795 Height=285", signedPosition.Geometry)
+	}
+	if signedPosition.BackStyle != 1 || signedPosition.FontSize != 8 ||
+		signedPosition.TextAlign != 2 || signedPosition.BackColorValue != 0x00333333 ||
+		signedPosition.ForeColorValue != 0x00FFFFFF {
+		t.Fatalf("Label signed-position properties=%+v", signedPosition)
+	}
+
 	datasheetTail := []byte{
 		0xFD, 0x64, 0x00, 0x32, 0x01, 0x33, 0x01, 0x35, 0x5D, 0x37, 0x02,
 		0x60, 0xEC, 0x04, 0x62, 0x08, 0x07, 0x63, 0x20, 0x01, 0x65, 0x90, 0x01,
