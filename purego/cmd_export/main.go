@@ -23,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	data, err := mdb.ReadTableData("t_abi_hbl")
+	data, _, err := mdb.ReadTableData("t_abi_hbl")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ReadTableData: %v\n", err)
 		os.Exit(1)

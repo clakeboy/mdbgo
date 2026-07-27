@@ -165,10 +165,11 @@ func TestReadTableData(t *testing.T) {
 
 	// Read first table
 	tableName := tables[0]
-	data, err := mdb.ReadTableData(tableName)
+	data, nulls, err := mdb.ReadTableData(tableName)
 	if err != nil {
 		t.Fatalf("ReadTableData(%s) error = %v", tableName, err)
 	}
+	_ = nulls
 
 	t.Logf("Table %s: %d rows", tableName, len(data))
 	for i, row := range data {
@@ -349,10 +350,11 @@ func TestQuerySimple(t *testing.T) {
 	}
 	t.Logf("Schema: %d columns, %d rows", len(schema.Columns), schema.RowCount)
 
-	data, err := mdb.ReadTableData("t_abi_hbl")
+	data, nulls, err := mdb.ReadTableData("t_abi_hbl")
 	if err != nil {
 		t.Fatalf("ReadTableData error = %v", err)
 	}
+	_ = nulls
 	t.Logf("ReadTableData: %d rows", len(data))
 	for i, row := range data {
 		if i >= 3 {

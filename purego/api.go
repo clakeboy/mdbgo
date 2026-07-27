@@ -111,6 +111,11 @@ func (mdb *MDB) GetTableSchema(tableName string) (*TableSchema, error) {
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
 	if entry == nil {
+		// 重试一次，确保目录中有表类型条目
+		mdb.handle.ReadCatalog(MDBTable)
+		entry = mdb.handle.GetCatalogEntryByName(tableName)
+	}
+	if entry == nil || entry.ObjectType != MDBTable {
 		return nil, fmt.Errorf("表 %s 不存在", tableName)
 	}
 
@@ -144,25 +149,29 @@ func (mdb *MDB) GetTableSchema(tableName string) (*TableSchema, error) {
 	return schema, nil
 }
 
-// ReadTableData 读取表数据
-func (mdb *MDB) ReadTableData(tableName string) ([][]string, error) {
+// ReadTableData 读取表数据，返回行数据和 null 标记（与行/列形状相同）。
+func (mdb *MDB) ReadTableData(tableName string) ([][]string, [][]bool, error) {
 	if mdb.handle == nil {
-		return nil, fmt.Errorf("数据库未打开")
+		return nil, nil, fmt.Errorf("数据库未打开")
 	}
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
-	if entry == nil {
-		return nil, fmt.Errorf("表 %s 不存在", tableName)
+	if entry == nil || entry.ObjectType != MDBTable {
+		mdb.handle.ReadCatalog(MDBTable)
+		entry = mdb.handle.GetCatalogEntryByName(tableName)
+	}
+	if entry == nil || entry.ObjectType != MDBTable {
+		return nil, nil, fmt.Errorf("表 %s 不存在", tableName)
 	}
 
 	table := mdb.handle.ReadTable(entry)
 	if table == nil {
-		return nil, fmt.Errorf("无法读取表 %s", tableName)
+		return nil, nil, fmt.Errorf("无法读取表 %s", tableName)
 	}
 	defer mdb.handle.FreeTableDef(table)
 
 	if mdb.handle.ReadColumns(table) == nil {
-		return nil, fmt.Errorf("无法读取表 %s 的列", tableName)
+		return nil, nil, fmt.Errorf("无法读取表 %s 的列", tableName)
 	}
 
 	// 绑定所有列
@@ -176,13 +185,18 @@ func (mdb *MDB) ReadTableData(tableName string) ([][]string, error) {
 	}
 
 	// 读取所有行
+	nCols := int(table.NumCols)
 	var result [][]string
+	var nulls [][]bool
 	table.RewindTable()
 	for table.FetchRow() {
-		row := make([]string, table.NumCols)
-		for i := 0; i < int(table.NumCols); i++ {
-			if boundValues[i] != nil {
-				col := table.Columns[i]
+		row := make([]string, nCols)
+		nullRow := make([]bool, nCols)
+		for i := 0; i < nCols; i++ {
+			col := table.Columns[i]
+			if col.IsNull {
+				nullRow[i] = true
+			} else if boundValues[i] != nil {
 				if col.ColType == MDBText || col.ColType == MDBMemo {
 					row[i] = UTF16LEToString(boundValues[i])
 				} else {
@@ -191,9 +205,10 @@ func (mdb *MDB) ReadTableData(tableName string) ([][]string, error) {
 			}
 		}
 		result = append(result, row)
+		nulls = append(nulls, nullRow)
 	}
 
-	return result, nil
+	return result, nulls, nil
 }
 
 // RowCount 获取表的行数
@@ -203,7 +218,11 @@ func (mdb *MDB) RowCount(tableName string) (int, error) {
 	}
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
-	if entry == nil {
+	if entry == nil || entry.ObjectType != MDBTable {
+		mdb.handle.ReadCatalog(MDBTable)
+		entry = mdb.handle.GetCatalogEntryByName(tableName)
+	}
+	if entry == nil || entry.ObjectType != MDBTable {
 		return 0, fmt.Errorf("表 %s 不存在", tableName)
 	}
 
@@ -247,7 +266,7 @@ func (mdb *MDB) FileFormat() (string, int) {
 
 // ExportToFile 导出表数据到文件
 func (mdb *MDB) ExportToFile(tableName, filename string) error {
-	data, err := mdb.ReadTableData(tableName)
+	data, _, err := mdb.ReadTableData(tableName)
 	if err != nil {
 		return err
 	}

@@ -346,7 +346,7 @@ func TestDebugMSysObjects(t *testing.T) {
 	// Test reading data from a user table
 	if len(tables) > 0 {
 		t.Logf("=== Reading data from first user table: %s ===", tables[0])
-		rows, err := api.ReadTableData(tables[0])
+		rows, _, err := api.ReadTableData(tables[0])
 		if err != nil {
 			t.Logf("ReadTableData(%s) error: %v", tables[0], err)
 		} else {

@@ -135,7 +135,7 @@ func (db *DB) ReadTable(tableName string) (*TableData, error) {
 		return nil, err
 	}
 
-	rows, err := db.puregoDB.ReadTableData(tableName)
+	rows, nulls, err := db.puregoDB.ReadTableData(tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func (db *DB) ReadTable(tableName string) (*TableData, error) {
 		columns[i] = col.Name
 	}
 
-	return &TableData{Columns: columns, Rows: rows}, nil
+	return &TableData{Columns: columns, Rows: rows, Nulls: nulls}, nil
 }
 
 // Query 执行只读 Access SQL 并返回兼容的字符串结果集。
@@ -308,10 +308,11 @@ func (db *DB) readTableBatched(ctx context.Context, tableName string, requestedC
 		return nil, err
 	}
 
-	rows, err := db.puregoDB.ReadTableData(tableName)
+	rows, nulls, err := db.puregoDB.ReadTableData(tableName)
 	if err != nil {
 		return nil, err
 	}
+	hasNulls := len(nulls) == len(rows)
 
 	columns := make([]string, 0, len(schema.Columns))
 	colIndex := make([]int, 0, len(schema.Columns))
@@ -345,12 +346,17 @@ func (db *DB) readTableBatched(ctx context.Context, tableName string, requestedC
 			}
 		}
 		row := make([]string, len(colIndex))
+		nullRow := make([]bool, len(colIndex))
 		for j, ci := range colIndex {
 			if ci < len(rows[r]) {
 				row[j] = rows[r][ci]
 			}
+			if hasNulls && ci < len(nulls[r]) {
+				nullRow[j] = nulls[r][ci]
+			}
 		}
 		result.Rows = append(result.Rows, row)
+		result.Nulls = append(result.Nulls, nullRow)
 	}
 
 	return result, nil
