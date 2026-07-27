@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	purego "github.com/clakeboy/mdbgo/purego"
 )
 
 // ValueKind identifies the logical type of a query value.
@@ -251,16 +253,24 @@ type queryColumn struct {
 	typeName string
 }
 
+type indexFilterPlan struct {
+	tableName  string
+	columnName string
+	colType    int
+	indexKey   string
+}
+
 type queryExecutor struct {
-	db         *DB
-	ctx        context.Context
-	params     map[string]Value
-	viewStack  map[string]bool
-	tableNames map[string]string
-	viewNames  map[string]string
-	tableCache map[string]*queryRelation
-	outerRow   []Value
-	outerRel   *queryRelation
+	db          *DB
+	ctx         context.Context
+	params      map[string]Value
+	viewStack   map[string]bool
+	tableNames  map[string]string
+	viewNames   map[string]string
+	tableCache  map[string]*queryRelation
+	outerRow    []Value
+	outerRel    *queryRelation
+	indexFilter *indexFilterPlan
 }
 
 var accessLikeCache sync.Map
@@ -395,8 +405,14 @@ func (e *queryExecutor) execute(stmt *sqlSelect) (*queryRelation, error) {
 	if err := e.ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	if stmt.where != nil && e.indexFilter == nil {
+		e.indexFilter = e.detectIndexFilter(stmt)
+	}
+
 	scanLimit := simpleScanLimit(stmt)
 	rel, err := e.executeSource(stmt, stmt.source, scanLimit)
+	e.indexFilter = nil
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +600,64 @@ func parseAccessSQLCached(sqlText string) (*sqlSelect, error) {
 	return stmt, nil
 }
 
+func (e *queryExecutor) detectIndexFilter(stmt *sqlSelect) *indexFilterPlan {
+	src, ok := stmt.source.(sqlTableSource)
+	if !ok {
+		return nil
+	}
+	bin, ok := stmt.where.(sqlBinary)
+	if !ok || bin.op != "=" {
+		return nil
+	}
+	ident, lok := bin.left.(sqlIdent)
+	lit, rok := bin.right.(sqlLiteral)
+	if !lok || !rok {
+		ident, lok = bin.right.(sqlIdent)
+		lit, rok = bin.left.(sqlLiteral)
+		if !lok || !rok {
+			return nil
+		}
+	}
+	columnName := ident.parts[len(ident.parts)-1]
+	tableName := src.ref.name
+
+	schema, err := e.db.Schema(tableName)
+	if err != nil || schema == nil {
+		return nil
+	}
+	var colType int
+	found := false
+	for _, col := range schema.Columns {
+		if strings.EqualFold(col.Name, columnName) {
+			colType = col.ColType
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	lookupStr := lit.value.String()
+	indexKey := purego.ValueToIndexKey(colType, lookupStr)
+
+	idx, err := e.db.puregoDB.FindIndexByColumn(tableName, columnName)
+	if err != nil || idx == nil {
+		return nil
+	}
+
+	return &indexFilterPlan{
+		tableName:  strings.ToLower(tableName),
+		columnName: columnName,
+		colType:    colType,
+		indexKey:   indexKey,
+	}
+}
+
 func (e *queryExecutor) loadPhysicalTable(name, alias string, maxRows int, requestedColumns []string) (*queryRelation, error) {
+	if e.indexFilter != nil && strings.EqualFold(name, e.indexFilter.tableName) {
+		return e.loadPhysicalTableIndexed(name, alias, maxRows, requestedColumns)
+	}
 	schema, err := e.db.Schema(name)
 	if err != nil {
 		return nil, err
@@ -654,6 +727,74 @@ func (e *queryExecutor) loadPhysicalTable(name, alias string, maxRows int, reque
 		cacheColumns[i].source = name
 	}
 	e.tableCache[cacheKey] = &queryRelation{columns: cacheColumns, rows: rel.rows}
+	return rel, nil
+}
+
+func (e *queryExecutor) loadPhysicalTableIndexed(name, alias string, maxRows int, requestedColumns []string) (*queryRelation, error) {
+	if e.indexFilter == nil {
+		return e.loadPhysicalTable(name, alias, maxRows, requestedColumns)
+	}
+
+	schema, err := e.db.Schema(name)
+	if err != nil {
+		return nil, err
+	}
+	requestedColumns = filterRequestedColumns(requestedColumns, schema)
+
+	rows, nulls, err := e.db.puregoDB.ReadTableDataByIndex(name, e.indexFilter.columnName, e.indexFilter.indexKey, requestedColumns)
+	if err != nil {
+		return e.loadPhysicalTable(name, alias, maxRows, requestedColumns)
+	}
+
+	source := alias
+	if source == "" {
+		source = name
+	}
+
+	activeCols := requestedColumns
+	if len(activeCols) == 0 {
+		activeCols = make([]string, len(schema.Columns))
+		for i, sc := range schema.Columns {
+			activeCols[i] = sc.Name
+		}
+	}
+
+	rel := &queryRelation{
+		columns: make([]queryColumn, len(activeCols)),
+		rows:    make([][]Value, len(rows)),
+	}
+	for i, cn := range activeCols {
+		kind := ValueString
+		typeName := ""
+		for _, sc := range schema.Columns {
+			if strings.EqualFold(sc.Name, cn) {
+				kind = valueKindForAccessType(sc.ColType)
+				typeName = sc.TypeName
+				break
+			}
+		}
+		rel.columns[i] = queryColumn{name: cn, source: source, kind: kind, typeName: typeName}
+	}
+	for i, rawRow := range rows {
+		if i&1023 == 0 {
+			if err := e.ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		row := make([]Value, len(rel.columns))
+		for j := range row {
+			raw := ""
+			if j < len(rawRow) {
+				raw = rawRow[j]
+			}
+			if i < len(nulls) && j < len(nulls[i]) && nulls[i][j] {
+				row[j] = NullValue()
+			} else {
+				row[j] = parseAccessValue(raw, rel.columns[j].kind)
+			}
+		}
+		rel.rows[i] = row
+	}
 	return rel, nil
 }
 
