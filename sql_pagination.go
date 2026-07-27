@@ -67,17 +67,12 @@ func (db *DB) QueryPageContext(
 	if err != nil {
 		return nil, err
 	}
-	session, release, err := db.acquireQuerySession(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
 	if len(stmt.order) == 0 {
 		table, ok := stmt.source.(sqlTableSource)
 		if !ok || len(stmt.group) != 0 || stmt.distinct || stmt.distinctRow || stmt.union != nil {
 			return nil, errors.New("cursor pagination requires an explicit ORDER BY for joined, grouped, distinct, or union queries")
 		}
-		schema, err := session.Schema(table.ref.name)
+		schema, err := db.Schema(table.ref.name)
 		if err != nil {
 			return nil, fmt.Errorf("infer cursor ordering: %w", err)
 		}
@@ -123,7 +118,7 @@ func (db *DB) QueryPageContext(
 		// unrelated position.
 		start = -1
 	}
-	rows, err := session.queryStatement(ctx, stmt, params)
+	rows, err := db.queryStatement(ctx, stmt, params)
 	if err != nil {
 		return nil, err
 	}

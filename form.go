@@ -1,20 +1,5 @@
 package mdbgo
 
-/*
-#cgo CFLAGS: -I${SRCDIR}/internal/bundled
-#cgo CFLAGS: -I${SRCDIR}/internal/bundled/include
-#cgo CFLAGS: -DTLS=__thread
-#cgo CFLAGS: -DICONV_CONST=const
-#cgo CFLAGS: -DHAVE_STRTOK_R=1
-#cgo CFLAGS: -DHAVE_SETLOCALE=1
-#cgo CFLAGS: -DHAVE_SYS_STAT_H=1
-#cgo CFLAGS: -DHAVE_SYS_TYPES_H=1
-#cgo darwin CFLAGS: -DHAVE_REALLOCF=1
-#include <stdlib.h>
-#include "bridge.h"
-*/
-import "C"
-
 import (
 	"errors"
 	"fmt"
@@ -23,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unsafe"
 )
 
 // PropertyItem 表示 Access 对象属性的键值对。
@@ -68,12 +52,6 @@ type FormContent struct {
 	Controls []FormControlContent
 }
 
-const (
-	accessObjectStorageNone    = 0
-	accessObjectStorageObjects = 1
-	accessObjectStorageTree    = 2
-)
-
 type accessStorageRow struct {
 	ID       int
 	ParentID int
@@ -88,232 +66,82 @@ type accessStorageRow struct {
 // 1. `Properties` 是窗体级别属性（属性块名为空）。
 // 2. `Components` 是组件级属性（属性块名非空，通常为控件名）。
 func (db *DB) ExportForms() ([]FormInfo, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
-
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_forms_data_t
-
-	rc := C.mdbgo_export_forms(db.ptr, &raw, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
-	}
-	defer C.mdbgo_free_forms_data(&raw)
-
-	formCount := int(raw.form_count)
-	result := make([]FormInfo, formCount)
-	if formCount == 0 {
-		return result, nil
-	}
-
-	cForms := unsafe.Slice((*C.mdbgo_form_info_t)(unsafe.Pointer(raw.forms)), formCount)
-	for i := 0; i < formCount; i++ {
-		form := FormInfo{
-			Name:           C.GoString(cForms[i].name),
-			ObjectType:     int(cForms[i].object_type),
-			ObjectTypeName: C.GoString(cForms[i].object_type_name),
-			TablePage:      uint32(cForms[i].table_pg),
-			Flags:          int(cForms[i].flags),
-		}
-
-		blocksCount := int(cForms[i].prop_block_count)
-		if blocksCount > 0 {
-			cBlocks := unsafe.Slice((*C.mdbgo_property_block_t)(unsafe.Pointer(cForms[i].prop_blocks)), blocksCount)
-			components := make([]FormComponent, 0, blocksCount)
-
-			for j := 0; j < blocksCount; j++ {
-				blockName := C.GoString(cBlocks[j].name)
-				props := propertyItemsFromC(cBlocks[j].items, int(cBlocks[j].item_count))
-
-				// 空块名按窗体属性处理，非空块名按组件处理。
-				if blockName == "" {
-					form.Properties = append(form.Properties, props...)
-					continue
-				}
-				components = append(components, FormComponent{
-					Name:       blockName,
-					Properties: props,
-				})
-			}
-
-			form.Components = components
-		}
-
-		result[i] = form
-	}
-
-	return result, nil
+	return exportFormsFromPurego(db)
 }
 
 // ExportForm 按名称导出单个 Access 窗体及其组件信息。
 //
 // 窗体名称按 Access 的规则不区分大小写；返回的 Name 保留数据库中的原始名称。
 func (db *DB) ExportForm(formName string) (*FormInfo, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
 	if strings.TrimSpace(formName) == "" {
 		return nil, errors.New("form name is empty")
 	}
-
-	forms, err := db.ExportForms()
-	if err != nil {
-		return nil, err
-	}
-	for i := range forms {
-		if strings.EqualFold(forms[i].Name, formName) {
-			return &forms[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("form not found: %s", formName)
+	return exportFormFromPurego(db, formName)
 }
 
 // ReadFormStreams 读取指定窗体的原始设计流（Lv/LvProp/LvExtra）。
 //
 // 这些字节是 Access 内部二进制格式，供 Go 侧自行解析。
 func (db *DB) ReadFormStreams(formName string) (*FormStreams, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
 	if strings.TrimSpace(formName) == "" {
 		return nil, errors.New("form name is empty")
 	}
-
-	cName := C.CString(formName)
-	defer C.free(unsafe.Pointer(cName))
-
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_form_streams_t
-
-	rc := C.mdbgo_read_form_streams(db.ptr, cName, &raw, (*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)))
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
-	}
-	defer C.mdbgo_free_form_streams(&raw)
-
-	return &FormStreams{
-		FormName: C.GoString(raw.form_name),
-		Lv:       cBytesToGo(raw.lv, int(raw.lv_len)),
-		LvProp:   cBytesToGo(raw.lv_prop, int(raw.lv_prop_len)),
-		LvExtra:  cBytesToGo(raw.lv_extra, int(raw.lv_extra_len)),
-	}, nil
+	return formStreamsFromPurego(db, formName)
 }
 
 // ReadAccessObjectDataByID 按 ID 读取 MSysAccessObjects.Data 原始字节。
 func (db *DB) ReadAccessObjectDataByID(objectID int) (*AccessObjectData, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
 	if objectID < 0 {
 		return nil, errors.New("object id must be >= 0")
 	}
-
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_blob_data_t
-	rc := C.mdbgo_read_access_object_data_by_id(
-		db.ptr,
-		C.int(objectID),
-		&raw,
-		(*C.char)(unsafe.Pointer(&errBuf[0])),
-		C.size_t(len(errBuf)),
-	)
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
+	objects, err := db.puregoDB.ReadMSysAccessObjectsAll()
+	if err != nil {
+		return nil, err
 	}
-	defer C.mdbgo_free_blob_data(&raw)
-
-	return &AccessObjectData{
-		ObjectID: objectID,
-		Data:     cBytesToGo(raw.data, int(raw.len)),
-	}, nil
+	for _, obj := range objects {
+		if obj.ObjectID == objectID {
+			return &AccessObjectData{
+				ObjectID: obj.ObjectID,
+				Data:     obj.Data,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("object not found: %d", objectID)
 }
 
 // readAccessObjectDataAll 单次顺序扫描 MSysAccessObjects，避免按 ID 重复整表扫描。
 func (db *DB) readAccessObjectDataAll() ([]AccessObjectData, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
+	objects, err := db.puregoDB.ReadMSysAccessObjectsAll()
+	if err != nil {
+		return nil, err
 	}
-
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_access_object_data_array_t
-	rc := C.mdbgo_read_access_object_data_all(
-		db.ptr,
-		&raw,
-		(*C.char)(unsafe.Pointer(&errBuf[0])),
-		C.size_t(len(errBuf)),
-	)
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
-	}
-	defer C.mdbgo_free_access_object_data_array(&raw)
-
-	n := int(raw.count)
-	if n <= 0 || raw.values == nil {
-		return nil, nil
-	}
-	cValues := unsafe.Slice((*C.mdbgo_access_object_data_t)(unsafe.Pointer(raw.values)), n)
-	result := make([]AccessObjectData, n)
-	for i := range cValues {
+	result := make([]AccessObjectData, len(objects))
+	for i, obj := range objects {
 		result[i] = AccessObjectData{
-			ObjectID: int(cValues[i].object_id),
-			Data:     cBytesToGo(cValues[i].data, int(cValues[i].len)),
+			ObjectID: obj.ObjectID,
+			Data:     obj.Data,
 		}
 	}
 	return result, nil
 }
 
 func (db *DB) accessObjectStorageKind() (int, error) {
-	if db == nil || db.ptr == nil {
-		return accessObjectStorageNone, errors.New("db is closed")
-	}
-
-	errBuf := make([]byte, cErrBufSize)
-	var kind C.int
-	rc := C.mdbgo_access_object_storage_kind(
-		db.ptr,
-		&kind,
-		(*C.char)(unsafe.Pointer(&errBuf[0])),
-		C.size_t(len(errBuf)),
-	)
-	if rc != 0 {
-		return accessObjectStorageNone, errors.New(cStringFromBuf(errBuf))
-	}
-	return int(kind), nil
+	return accessObjectStorageKindFromPurego(db), nil
 }
 
 func (db *DB) readAccessStorageRows() ([]accessStorageRow, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
+	rows, err := db.puregoDB.ReadMSysAccessStorageAll()
+	if err != nil {
+		return nil, err
 	}
-
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_access_storage_entry_array_t
-	rc := C.mdbgo_read_access_storage_entries(
-		db.ptr,
-		&raw,
-		(*C.char)(unsafe.Pointer(&errBuf[0])),
-		C.size_t(len(errBuf)),
-	)
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
-	}
-	defer C.mdbgo_free_access_storage_entries(&raw)
-
-	n := int(raw.count)
-	if n <= 0 || raw.values == nil {
-		return nil, nil
-	}
-	cValues := unsafe.Slice((*C.mdbgo_access_storage_entry_t)(unsafe.Pointer(raw.values)), n)
-	result := make([]accessStorageRow, n)
-	for i := range cValues {
+	result := make([]accessStorageRow, len(rows))
+	for i, r := range rows {
 		result[i] = accessStorageRow{
-			ID:       int(cValues[i].id),
-			ParentID: int(cValues[i].parent_id),
-			Type:     int(cValues[i].entry_type),
-			Name:     C.GoString(cValues[i].name),
-			Data:     cBytesToGo(cValues[i].data, int(cValues[i].len)),
+			ID:       r.ID,
+			ParentID: r.ParentID,
+			Type:     r.Type,
+			Name:     r.Name,
+			Data:     r.Data,
 		}
 	}
 	return result, nil
@@ -323,20 +151,12 @@ func (db *DB) readAccessStorageRows() ([]accessStorageRow, error) {
 //
 // 此方法只解析指定窗体，不会调用 ExportFormContents 或解析其他窗体。
 func (db *DB) ExportFormContent(formName string) (*FormContent, error) {
-	streams, err := db.ReadFormObjectStreams(formName)
-	if err != nil {
-		return nil, err
-	}
-	return ParseFormContent(streams)
+	return exportFormContentFromPurego(db, formName)
 }
 
 // ExportFormContents 一次读取内部对象存储并导出全部窗体内容。
 // 相比循环调用 ReadFormContent，此方法不会为每个窗体重复读取和重组对象存储。
 func (db *DB) ExportFormContents() ([]FormContent, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
-
 	entries, err := db.ReadAccessObjectEntries()
 	if err != nil {
 		return nil, err
@@ -885,7 +705,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 
 // assignFormControlSections 根据 Blob 中的分区标记给控件分组。
 // TypeInfo 允许把后创建的控件追加到目录末尾，即使其实际位于 FormFooter 之前；
-// Blob 的物理顺序才稳定保存“分区标记，随后是该分区控件”的结构。
+// Blob 的物理顺序才稳定保存"分区标记，随后是该分区控件"的结构。
 func assignFormControlSections(controls []FormControlContent) []FormSectionContent {
 	sections := make([]FormSectionContent, 0, 3)
 	currentSection := -1
@@ -958,56 +778,6 @@ func isFormSectionTypeCode(typeCode uint16) bool {
 	}
 }
 
-// propertyItemsFromC 把 C 侧属性项数组深拷贝为 Go 切片。
-func propertyItemsFromC(ptr *C.mdbgo_property_item_t, count int) []PropertyItem {
-	if ptr == nil || count <= 0 {
-		return nil
-	}
-
-	out := make([]PropertyItem, count)
-	items := unsafe.Slice((*C.mdbgo_property_item_t)(unsafe.Pointer(ptr)), count)
-	for i := 0; i < count; i++ {
-		out[i] = PropertyItem{
-			Key:   C.GoString(items[i].key),
-			Value: C.GoString(items[i].value),
-		}
-	}
-	return out
-}
-
-// cBytesToGo 把 C 的字节缓冲区深拷贝到 Go。
-func cBytesToGo(ptr *C.uchar, n int) []byte {
-	if ptr == nil || n <= 0 {
-		return nil
-	}
-	src := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), n)
-	out := make([]byte, n)
-	copy(out, src)
-	return out
-}
-
 func (db *DB) listAccessObjectIDs() ([]int, error) {
-	errBuf := make([]byte, cErrBufSize)
-	var raw C.mdbgo_int_array_t
-	rc := C.mdbgo_list_access_object_ids(
-		db.ptr,
-		&raw,
-		(*C.char)(unsafe.Pointer(&errBuf[0])),
-		C.size_t(len(errBuf)),
-	)
-	if rc != 0 {
-		return nil, errors.New(cStringFromBuf(errBuf))
-	}
-	defer C.mdbgo_free_int_array(&raw)
-
-	n := int(raw.count)
-	if n <= 0 || raw.values == nil {
-		return nil, nil
-	}
-	cVals := unsafe.Slice((*C.int)(unsafe.Pointer(raw.values)), n)
-	out := make([]int, n)
-	for i := 0; i < n; i++ {
-		out[i] = int(cVals[i])
-	}
-	return out, nil
+	return db.puregoDB.ListAccessObjectIDs()
 }

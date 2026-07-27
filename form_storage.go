@@ -1,15 +1,10 @@
 package mdbgo
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"sort"
 	"strings"
 	"unicode"
-
-	"github.com/richardlehane/mscfb"
 )
 
 // AccessObjectData 是 MSysAccessObjects.Data 的原始内容。
@@ -50,59 +45,15 @@ type FormObjectStreams struct {
 // Jet/Access 会把 VBA、Form 等对象流保存在同一个 OLE Compound 文件中，
 // MSysAccessObjects 的每一行只是该文件的一个连续分片，不能独立映射到某个窗体。
 func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
-	kind, err := db.accessObjectStorageKind()
+	container, err := db.puregoDB.ReadAccessObjectContainer()
 	if err != nil {
 		return nil, err
 	}
-	switch kind {
-	case accessObjectStorageTree:
-		return nil, errors.New("MSysAccessStorage stores entries directly and has no OLE Compound container; use ReadAccessObjectEntries")
-	case accessObjectStorageNone:
-		return nil, errors.New("database contains neither MSysAccessObjects nor MSysAccessStorage")
-	case accessObjectStorageObjects:
-	default:
-		return nil, fmt.Errorf("unsupported Access object storage kind: %d", kind)
-	}
-
-	objects, err := db.readAccessObjectDataAll()
-	if err != nil {
-		return nil, err
-	}
-	if len(objects) == 0 {
-		return nil, errors.New("MSysAccessObjects is empty")
-	}
-	sort.Slice(objects, func(i, j int) bool {
-		return objects[i].ObjectID < objects[j].ObjectID
-	})
-
-	compoundMagic := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
-	result := &AccessObjectContainer{FirstObjectID: -1, LastObjectID: -1}
-	started := false
-	for i := range objects {
-		obj := &objects[i]
-		if len(obj.Data) == 0 {
-			continue
-		}
-		if !started {
-			off := bytes.Index(obj.Data, compoundMagic)
-			if off < 0 {
-				continue
-			}
-			started = true
-			result.FirstObjectID = obj.ObjectID
-			result.Data = append(result.Data, obj.Data[off:]...)
-		} else {
-			result.Data = append(result.Data, obj.Data...)
-		}
-		result.LastObjectID = obj.ObjectID
-	}
-	if len(result.Data) == 0 {
-		return nil, errors.New("MSysAccessObjects contains no OLE Compound container")
-	}
-	return result, nil
+	return &AccessObjectContainer{
+		FirstObjectID: container.FirstObjectID,
+		LastObjectID:  container.LastObjectID,
+		Data:          container.Data,
+	}, nil
 }
 
 // ReadAccessObjectEntries 读取 Access 内部对象存储的全部目录和流。
@@ -110,53 +61,21 @@ func (db *DB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 // Access 2000 的 MSysAccessObjects 保存 OLE Compound 分片；Access 2003 的
 // MSysAccessStorage 直接保存父子目录树。两种布局都归一化为 AccessObjectEntry。
 func (db *DB) ReadAccessObjectEntries() ([]AccessObjectEntry, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
-	kind, err := db.accessObjectStorageKind()
+	entries, err := db.puregoDB.ReadAccessObjectEntries()
 	if err != nil {
 		return nil, err
 	}
-	if kind == accessObjectStorageTree {
-		rows, err := db.readAccessStorageRows()
-		if err != nil {
-			return nil, err
+	result := make([]AccessObjectEntry, len(entries))
+	for i, e := range entries {
+		result[i] = AccessObjectEntry{
+			Path:  e.Path,
+			Name:  e.Name,
+			IsDir: e.IsDir,
+			Size:  e.Size,
+			Data:  e.Data,
 		}
-		return accessObjectEntriesFromStorage(rows)
 	}
-	if kind == accessObjectStorageNone {
-		return nil, errors.New("database contains neither MSysAccessObjects nor MSysAccessStorage")
-	}
-	if kind != accessObjectStorageObjects {
-		return nil, fmt.Errorf("unsupported Access object storage kind: %d", kind)
-	}
-
-	container, err := db.ReadAccessObjectContainer()
-	if err != nil {
-		return nil, err
-	}
-
-	reader, err := mscfb.New(bytes.NewReader(container.Data))
-	if err != nil {
-		return nil, fmt.Errorf("parse Access OLE Compound container: %w", err)
-	}
-	entries := make([]AccessObjectEntry, 0, len(reader.File)-1)
-	for _, file := range reader.File[1:] {
-		entry := AccessObjectEntry{
-			Path:  strings.Join(append(append([]string(nil), file.Path...), file.Name), "/"),
-			Name:  file.Name,
-			IsDir: file.FileInfo().IsDir(),
-			Size:  file.Size,
-		}
-		if !entry.IsDir && entry.Size > 0 {
-			entry.Data, err = io.ReadAll(file)
-			if err != nil {
-				return nil, fmt.Errorf("read Access OLE stream %q: %w", entry.Path, err)
-			}
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
+	return result, nil
 }
 
 func accessObjectEntriesFromStorage(rows []accessStorageRow) ([]AccessObjectEntry, error) {
@@ -239,18 +158,7 @@ func accessObjectEntriesFromStorage(rows []accessStorageRow) ([]AccessObjectEntr
 
 // ReadFormObjectStreams 按窗体名读取 Blob、TypeInfo、PropData 和 BlobDelta。
 func (db *DB) ReadFormObjectStreams(formName string) (*FormObjectStreams, error) {
-	if db == nil || db.ptr == nil {
-		return nil, errors.New("db is closed")
-	}
-	if strings.TrimSpace(formName) == "" {
-		return nil, errors.New("form name is empty")
-	}
-
-	entries, err := db.ReadAccessObjectEntries()
-	if err != nil {
-		return nil, err
-	}
-	return formObjectStreamsFromEntries(entries, formName)
+	return formObjectStreamsFromPurego(db, formName)
 }
 
 func formStorageIDsFromEntries(entries []AccessObjectEntry) (map[string]int, error) {

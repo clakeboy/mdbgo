@@ -112,7 +112,7 @@ func ParseFormLayoutFromObjectStreams(streams *FormObjectStreams) (*FormLayout, 
 // Access 内部会把对象 ID 写在 MSysObjects.Id 中，低 24 位通常对应对象页号。
 // 对于本仓库样例库，MSysAccessObjects.ID 与页号存在固定偏移（page-9）。
 func (db *DB) ReadFormAccessObjectData(formName string) (*AccessObjectData, error) {
-	if db == nil || db.ptr == nil {
+	if db == nil || (db.handle == nil) {
 		return nil, errors.New("db is closed")
 	}
 	if strings.TrimSpace(formName) == "" {
@@ -153,7 +153,7 @@ func (db *DB) ReadFormAccessObjectData(formName string) (*AccessObjectData, erro
 //
 // 这些分片通常共同构成窗体定义的不同部分（对象索引、代码、设计元数据等）。
 func (db *DB) ReadFormAccessObjectChunks(formName string) ([]AccessObjectChunk, error) {
-	if db == nil || db.ptr == nil {
+	if db == nil || (db.handle == nil) {
 		return nil, errors.New("db is closed")
 	}
 	if strings.TrimSpace(formName) == "" {
@@ -202,7 +202,7 @@ func (db *DB) ReadFormAccessObjectChunks(formName string) ([]AccessObjectChunk, 
 // 1. 强命中：包含 DocClass=Form_xxx 或 Attribute VB_Name="Form_xxx"
 // 2. 弱命中：命中 NameMap 控件名数量 >= 3
 func (db *DB) ReadFormDesignChunks(formName string) ([]FormDesignChunk, error) {
-	if db == nil || db.ptr == nil {
+	if db == nil || (db.handle == nil) {
 		return nil, errors.New("db is closed")
 	}
 	if strings.TrimSpace(formName) == "" {
@@ -388,7 +388,7 @@ func ParseFormLayoutFromDesignChunks(formName string, chunks []FormDesignChunk, 
 // ReadAndParseFormLayout 读取窗体设计流并生成兼容 FormLayout 的结果。
 // 优先使用内部 OLE Forms/TypeInfo 的精确控件目录；旧分片启发式仅作为兼容兜底。
 func (db *DB) ReadAndParseFormLayout(formName string) (*FormLayout, error) {
-	if db == nil || db.ptr == nil {
+	if db == nil || (db.handle == nil) {
 		return nil, errors.New("db is closed")
 	}
 	if strings.TrimSpace(formName) == "" {

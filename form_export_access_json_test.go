@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1151,4 +1152,342 @@ func findAccessRawJSONControl(controls []accessRawJSONControl, name string) *acc
 		}
 	}
 	return nil
+}
+
+func exportAllFormsJSON(t *testing.T, dbPath string) (map[string]json.RawMessage, error) {
+	t.Helper()
+	db, err := OpenPureGo(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("OpenPureGo(%q) failed: %w", dbPath, err)
+	}
+	defer db.Close()
+
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		return nil, fmt.Errorf("ReadAccessObjectEntries failed: %w", err)
+	}
+
+	formIDs, err := formStorageIDsFromEntries(entries)
+	if err != nil {
+		return nil, fmt.Errorf("formStorageIDsFromEntries failed: %w", err)
+	}
+
+	formNames := make([]string, 0, len(formIDs))
+	for name := range formIDs {
+		formNames = append(formNames, name)
+	}
+	sort.Strings(formNames)
+
+	builder := newAccessRawJSONBuilder(entries)
+	result := make(map[string]json.RawMessage, len(formNames))
+	for _, name := range formNames {
+		form, err := builder.buildForm(name)
+		if err != nil {
+			return nil, fmt.Errorf("buildForm(%q) failed: %w", name, err)
+		}
+		data, err := json.Marshal(form)
+		if err != nil {
+			return nil, fmt.Errorf("json.Marshal(%q) failed: %w", name, err)
+		}
+		result[name] = data
+	}
+	return result, nil
+}
+
+func exportAllFormsJSONWithOpen(t *testing.T, dbPath string) (map[string]json.RawMessage, error) {
+	t.Helper()
+	db, err := Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("Open(%q) failed: %w", dbPath, err)
+	}
+	defer db.Close()
+
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		return nil, fmt.Errorf("ReadAccessObjectEntries failed: %w", err)
+	}
+
+	formIDs, err := formStorageIDsFromEntries(entries)
+	if err != nil {
+		return nil, fmt.Errorf("formStorageIDsFromEntries failed: %w", err)
+	}
+
+	formNames := make([]string, 0, len(formIDs))
+	for name := range formIDs {
+		formNames = append(formNames, name)
+	}
+	sort.Strings(formNames)
+
+	builder := newAccessRawJSONBuilder(entries)
+	result := make(map[string]json.RawMessage, len(formNames))
+	for _, name := range formNames {
+		form, err := builder.buildForm(name)
+		if err != nil {
+			return nil, fmt.Errorf("buildForm(%q) failed: %w", name, err)
+		}
+		data, err := json.Marshal(form)
+		if err != nil {
+			return nil, fmt.Errorf("json.Marshal(%q) failed: %w", name, err)
+		}
+		result[name] = data
+	}
+	return result, nil
+}
+
+func TestPureGoExportAllFormsAccess2000Vs2003(t *testing.T) {
+	dbPaths := []struct {
+		name string
+		path string
+	}{
+		{"Access 2000 MSysAccessObjects", "testdb/mdbs/mpci_2000.mdb"},
+		{"Access 2003 MSysAccessStorage", "testdb/mdbs/mpci_2003.mdb"},
+	}
+	results := make(map[string]map[string]json.RawMessage)
+	for _, p := range dbPaths {
+		if _, err := os.Stat(p.path); err != nil {
+			t.Skipf("fixture not found: %s", p.path)
+			return
+		}
+		forms, err := exportAllFormsJSON(t, p.path)
+		if err != nil {
+			t.Fatalf("[%s] %v", p.name, err)
+		}
+		results[p.name] = forms
+		t.Logf("[%s] 共 %d 个窗体，全部导出成功", p.name, len(forms))
+	}
+
+	ref := results["Access 2000 MSysAccessObjects"]
+	got := results["Access 2003 MSysAccessStorage"]
+
+	allNames := make(map[string]bool)
+	for name := range ref {
+		allNames[name] = true
+	}
+	for name := range got {
+		allNames[name] = true
+	}
+
+	names := make([]string, 0, len(allNames))
+	for name := range allNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	diffCount := 0
+	matchCount := 0
+	for _, name := range names {
+		refData, refOK := ref[name]
+		gotData, gotOK := got[name]
+
+		if !refOK {
+			t.Logf("注意: 窗体 %q 仅在 2003 中存在", name)
+			continue
+		}
+		if !gotOK {
+			t.Logf("注意: 窗体 %q 仅在 2000 中存在", name)
+			continue
+		}
+
+		if bytes.Equal(refData, gotData) {
+			matchCount++
+		} else {
+			diffCount++
+			var refRaw, gotRaw accessRawJSONForm
+			json.Unmarshal(refData, &refRaw)
+			json.Unmarshal(gotData, &gotRaw)
+
+			var diffs []string
+			if refRaw.Title != gotRaw.Title {
+				diffs = append(diffs, fmt.Sprintf("Title=%q→%q", refRaw.Title, gotRaw.Title))
+			}
+			if refRaw.Source != gotRaw.Source {
+				diffs = append(diffs, fmt.Sprintf("Source=%q→%q", refRaw.Source, gotRaw.Source))
+			}
+			if refRaw.View != gotRaw.View {
+				diffs = append(diffs, fmt.Sprintf("View=%d→%d", refRaw.View, gotRaw.View))
+			}
+			if refRaw.Width != gotRaw.Width {
+				diffs = append(diffs, fmt.Sprintf("Width=%d→%d", refRaw.Width, gotRaw.Width))
+			}
+			if refRaw.Height != gotRaw.Height {
+				diffs = append(diffs, fmt.Sprintf("Height=%d→%d", refRaw.Height, gotRaw.Height))
+			}
+			if refRaw.BackGroundColor != gotRaw.BackGroundColor {
+				diffs = append(diffs, fmt.Sprintf("BackGroundColor=%d→%d", refRaw.BackGroundColor, gotRaw.BackGroundColor))
+			}
+			if diffCount <= 15 {
+				t.Logf("窗体 %q 差异: %s", name, strings.Join(diffs, ", "))
+			}
+		}
+	}
+
+	t.Logf("统计: %d 个完全一致, %d 个有元数据差异（Access 版本间自然差异）, 共 %d 个窗体",
+		matchCount, diffCount, len(names))
+}
+
+func TestPureGoVsCGOExportAllForms(t *testing.T) {
+	testDBs := []struct {
+		name string
+		path string
+	}{
+		{"mpci_2000.mdb (MSysAccessObjects)", "testdb/mdbs/mpci_2000.mdb"},
+		{"mpci_2003.mdb (MSysAccessStorage)", "testdb/mdbs/mpci_2003.mdb"},
+	}
+
+	for _, d := range testDBs {
+		if _, err := os.Stat(d.path); err != nil {
+			t.Skipf("fixture not found: %s", d.path)
+			return
+		}
+
+		t.Run(d.name, func(t *testing.T) {
+			cgoForms, err := exportAllFormsJSONWithOpen(t, d.path)
+			if err != nil {
+				t.Fatalf("CGO export failed: %v", err)
+			}
+
+			pureForms, err := exportAllFormsJSON(t, d.path)
+			if err != nil {
+				t.Fatalf("PureGo export failed: %v", err)
+			}
+
+			if len(cgoForms) != len(pureForms) {
+				t.Fatalf("窗体数量不一致: CGO=%d, PureGo=%d", len(cgoForms), len(pureForms))
+			}
+			t.Logf("窗体数: %d", len(cgoForms))
+
+			allNames := make(map[string]bool)
+			for name := range cgoForms {
+				allNames[name] = true
+			}
+			for name := range pureForms {
+				allNames[name] = true
+			}
+			names := make([]string, 0, len(allNames))
+			for name := range allNames {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+
+			diffCount := 0
+			matchCount := 0
+			for _, name := range names {
+				cgoData, cgoOK := cgoForms[name]
+				pureData, pureOK := pureForms[name]
+
+				if !cgoOK {
+					t.Errorf("窗体 %q 仅在 PureGo 中存在", name)
+					continue
+				}
+				if !pureOK {
+					t.Errorf("窗体 %q 仅在 CGO 中存在", name)
+					continue
+				}
+
+				if bytes.Equal(cgoData, pureData) {
+					matchCount++
+				} else {
+					diffCount++
+					if diffCount <= 10 {
+						diffFields := compareFormJSON(cgoData, pureData)
+						t.Errorf("窗体 %q CGO 与 PureGo 输出不一致:\n  %s", name, strings.Join(diffFields, "\n  "))
+					}
+				}
+			}
+
+			if diffCount == 0 {
+				t.Logf("CGO vs PureGo: %d 个窗体完全一致", matchCount)
+			} else {
+				t.Errorf("CGO vs PureGo: %d 个一致, %d 个不一致", matchCount, diffCount)
+			}
+		})
+	}
+}
+
+func compareFormJSON(a, b []byte) []string {
+	var formA, formB accessRawJSONForm
+	json.Unmarshal(a, &formA)
+	json.Unmarshal(b, &formB)
+
+	var diffs []string
+	addDiff := func(field string, vA, vB interface{}) {
+		diffs = append(diffs, fmt.Sprintf("%s: CGO=%v  PureGo=%v", field, vA, vB))
+	}
+
+	if formA.Name != formB.Name {
+		addDiff("Name", formA.Name, formB.Name)
+	}
+	if formA.Title != formB.Title {
+		addDiff("Title", formA.Title, formB.Title)
+	}
+	if formA.Source != formB.Source {
+		addDiff("Source", formA.Source, formB.Source)
+	}
+	if formA.View != formB.View {
+		addDiff("View", formA.View, formB.View)
+	}
+	if formA.Width != formB.Width {
+		addDiff("Width", formA.Width, formB.Width)
+	}
+	if formA.Height != formB.Height {
+		addDiff("Height", formA.Height, formB.Height)
+	}
+	if formA.BackGroundColor != formB.BackGroundColor {
+		addDiff("BackGroundColor", formA.BackGroundColor, formB.BackGroundColor)
+	}
+
+	if len(formA.Controls) != len(formB.Controls) {
+		addDiff("Controls数量", len(formA.Controls), len(formB.Controls))
+	} else {
+		for i := range formA.Controls {
+			ca, cb := formA.Controls[i], formB.Controls[i]
+			if ca.Name != cb.Name {
+				addDiff(fmt.Sprintf("Controls[%d].Name", i), ca.Name, cb.Name)
+				break
+			}
+			compareControlJSON(&ca, &cb, fmt.Sprintf("Controls[%d]", i), &diffs, addDiff)
+		}
+	}
+	return diffs
+}
+
+func compareControlJSON(a, b *accessRawJSONControl, prefix string, diffs *[]string, addDiff func(string, interface{}, interface{})) {
+	if a.ClassType != b.ClassType {
+		addDiff(prefix+".ClassType", a.ClassType, b.ClassType)
+	}
+	if a.Name != b.Name {
+		addDiff(prefix+".Name", a.Name, b.Name)
+	}
+	if a.Width != b.Width {
+		addDiff(prefix+".Width", a.Width, b.Width)
+	}
+	if a.Height != b.Height {
+		addDiff(prefix+".Height", a.Height, b.Height)
+	}
+	if a.Top != b.Top {
+		addDiff(prefix+".Top", a.Top, b.Top)
+	}
+	if a.Left != b.Left {
+		addDiff(prefix+".Left", a.Left, b.Left)
+	}
+	if a.Source != b.Source {
+		addDiff(prefix+".Source", a.Source, b.Source)
+	}
+	if a.Text != b.Text {
+		addDiff(prefix+".Text", a.Text, b.Text)
+	}
+	if len(a.Controls) != len(b.Controls) {
+		addDiff(prefix+".Controls数量", len(a.Controls), len(b.Controls))
+	} else {
+		for i := range a.Controls {
+			compareControlJSON(&a.Controls[i], &b.Controls[i], fmt.Sprintf("%s.Controls[%d]", prefix, i), diffs, addDiff)
+		}
+	}
+	if len(a.Tabs) != len(b.Tabs) {
+		addDiff(prefix+".Tabs数量", len(a.Tabs), len(b.Tabs))
+	} else {
+		for i := range a.Tabs {
+			compareControlJSON(&a.Tabs[i], &b.Tabs[i], fmt.Sprintf("%s.Tabs[%d]", prefix, i), diffs, addDiff)
+		}
+	}
 }

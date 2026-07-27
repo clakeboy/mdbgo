@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestParseAccessSQLFeatures(t *testing.T) {
@@ -119,34 +117,11 @@ func TestQueryContextCancellation(t *testing.T) {
 	}
 }
 
-func TestConcurrentQueriesUseIndependentHandles(t *testing.T) {
-	dbPath := requireDBFile(t)
-	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 4})
-	if err != nil {
-		t.Fatalf("OpenWithOptions failed: %v", err)
-	}
-	defer db.Close()
-
-	first, releaseFirst, err := db.acquireQuerySession(context.Background())
-	if err != nil {
-		t.Fatalf("acquire first query session: %v", err)
-	}
-	defer releaseFirst()
-	second, releaseSecond, err := db.acquireQuerySession(context.Background())
-	if err != nil {
-		t.Fatalf("acquire second query session: %v", err)
-	}
-	defer releaseSecond()
-	if first.ptr == second.ptr {
-		t.Fatal("concurrent query sessions unexpectedly share one mdbtools handle")
-	}
-}
-
 func TestConcurrentQueriesSameDB(t *testing.T) {
 	dbPath := requireDBFile(t)
-	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 4})
+	db, err := Open(dbPath)
 	if err != nil {
-		t.Fatalf("OpenWithOptions failed: %v", err)
+		t.Fatalf("Open failed: %v", err)
 	}
 	defer db.Close()
 
@@ -177,73 +152,6 @@ func TestConcurrentQueriesSameDB(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
-	}
-}
-
-func TestConcurrentQueryPoolHonorsContext(t *testing.T) {
-	dbPath := requireDBFile(t)
-	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 1})
-	if err != nil {
-		t.Fatalf("OpenWithOptions failed: %v", err)
-	}
-	defer db.Close()
-
-	_, release, err := db.acquireQuerySession(context.Background())
-	if err != nil {
-		t.Fatalf("occupy query session: %v", err)
-	}
-	defer release()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err = db.QueryContext(ctx, "SELECT TOP 1 * FROM [t_abi_hbl]", nil)
-	if err != context.DeadlineExceeded {
-		t.Fatalf("waiting query error=%v, want context deadline exceeded", err)
-	}
-}
-
-func TestCloseWaitsForActiveQueryHandle(t *testing.T) {
-	dbPath := requireDBFile(t)
-	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 1})
-	if err != nil {
-		t.Fatalf("OpenWithOptions failed: %v", err)
-	}
-	_, release, err := db.acquireQuerySession(context.Background())
-	if err != nil {
-		t.Fatalf("acquire query session: %v", err)
-	}
-
-	closeDone := make(chan error, 1)
-	go func() {
-		closeDone <- db.Close()
-	}()
-	deadline := time.Now().Add(time.Second)
-	for {
-		db.stateMu.Lock()
-		closed := db.closed
-		db.stateMu.Unlock()
-		if closed {
-			break
-		}
-		if time.Now().After(deadline) {
-			release()
-			t.Fatal("Close did not mark DB closed")
-		}
-		runtime.Gosched()
-	}
-	select {
-	case err := <-closeDone:
-		release()
-		t.Fatalf("Close returned before active query handle was released: %v", err)
-	default:
-	}
-
-	release()
-	if err := <-closeDone; err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-	if _, err := db.QueryContext(context.Background(), "SELECT TOP 1 * FROM [t_abi_hbl]", nil); err == nil {
-		t.Fatal("query after Close unexpectedly succeeded")
 	}
 }
 
@@ -514,54 +422,5 @@ func BenchmarkGoQueryEngineFirstPage(b *testing.B) {
 			b.Fatal(err)
 		}
 		_ = rows.Close()
-	}
-}
-
-func BenchmarkGoQueryEngineParallel(b *testing.B) {
-	dbPath := strings.TrimSpace(os.Getenv("MDBGO_TEST_DB"))
-	if dbPath == "" {
-		dbPath = defaultTestDB
-	}
-	if _, err := os.Stat(dbPath); err != nil {
-		b.Skipf("database fixture unavailable: %v", err)
-	}
-	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 4})
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer db.Close()
-	const query = "SELECT [abi_hbl_id], [house_no] FROM [t_abi_hbl] LIMIT 100"
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			rows, err := db.QueryContext(context.Background(), query, nil)
-			if err != nil {
-				b.Error(err)
-				return
-			}
-			_ = rows.Close()
-		}
-	})
-}
-
-func BenchmarkLegacyQueryFirstPage(b *testing.B) {
-	dbPath := strings.TrimSpace(os.Getenv("MDBGO_TEST_DB"))
-	if dbPath == "" {
-		dbPath = defaultTestDB
-	}
-	if _, err := os.Stat(dbPath); err != nil {
-		b.Skipf("database fixture unavailable: %v", err)
-	}
-	db, err := Open(dbPath)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer db.Close()
-	const query = "SELECT [abi_hbl_id], [house_no] FROM [t_abi_hbl] LIMIT 100"
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := db.queryLegacy(query); err != nil {
-			b.Fatal(err)
-		}
 	}
 }

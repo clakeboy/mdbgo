@@ -737,7 +737,7 @@ func TestReadAccessObjectContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accessObjectStorageKind failed: %v", err)
 	}
-	if kind == accessObjectStorageTree {
+	if kind == 2 { // purego.AccessStorageTree
 		_, err := db.ReadAccessObjectContainer()
 		if err == nil || !strings.Contains(err.Error(), "has no OLE Compound container") {
 			t.Fatalf("ReadAccessObjectContainer error=%v, want MSysAccessStorage explanation", err)
@@ -788,8 +788,8 @@ func TestReadAccessObjectEntriesStorageFormats(t *testing.T) {
 		path     string
 		wantKind int
 	}{
-		{name: "Access 2000 MSysAccessObjects", path: "testdb/mdbs/mpci_2000.mdb", wantKind: accessObjectStorageObjects},
-		{name: "Access 2003 MSysAccessStorage", path: "testdb/mdbs/mpci_2003.mdb", wantKind: accessObjectStorageTree},
+		{name: "Access 2000 MSysAccessObjects", path: "testdb/mdbs/mpci_2000.mdb", wantKind: 1}, // purego.AccessStorageObjects
+		{name: "Access 2003 MSysAccessStorage", path: "testdb/mdbs/mpci_2003.mdb", wantKind: 2}, // purego.AccessStorageTree
 	}
 
 	for _, tt := range tests {
