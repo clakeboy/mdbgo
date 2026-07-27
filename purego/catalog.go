@@ -78,8 +78,10 @@ func (mdb *MdbHandle) ReadCatalog(objtype int) []*MdbCatalogEntry {
 		return nil
 	}
 
+	// LvProp 是 OLE 长字段：这里只会绑定到 12 字节 OLE 头，而下面的旧解析器
+	// 仍要求完整 KKD 数据，因此暂不启用长度指针，避免把头部误当成属性内容。
 	kkdSizeOle := 0
-	propsIdx := mdb.BindColumnByName(table, "LvProp", objPropsBuf, &kkdSizeOle)
+	propsIdx := mdb.BindColumnByName(table, "LvProp", objPropsBuf, nil)
 	if propsIdx == -1 {
 		fmt.Printf("无法绑定列 %s 从表 %s\n", "LvProp", msysobj.ObjectName)
 		return nil

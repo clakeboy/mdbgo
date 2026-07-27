@@ -297,6 +297,8 @@ type MdbTableDef struct {
 	NumVarCols    uint
 	IsTempTable   bool
 	TempTablePages []interface{}
+	rowFields      []MdbField
+	varColOffsets  []int
 }
 
 // MdbIndex 索引定义

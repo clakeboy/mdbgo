@@ -2,17 +2,14 @@ package purego
 
 import (
 	"fmt"
-	"io"
 	"math"
 	"os"
-	"sync"
 )
 
 // MdbFileReader 文件读取器
 type MdbFileReader struct {
-	File     *os.File
-	Size     int64
-	Mutex    sync.Mutex
+	File *os.File
+	Size int64
 }
 
 // NewMdbFileReader 创建新的文件读取器
@@ -41,14 +38,7 @@ func (r *MdbFileReader) Close() error {
 
 // ReadAt 从指定位置读取数据
 func (r *MdbFileReader) ReadAt(buf []byte, offset int64) (int, error) {
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
-
-	_, err := r.File.Seek(offset, io.SeekStart)
-	if err != nil {
-		return 0, err
-	}
-	return r.File.Read(buf)
+	return r.File.ReadAt(buf, offset)
 }
 
 // GetByte 从缓冲区获取字节

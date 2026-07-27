@@ -112,7 +112,11 @@ func (mdb *MdbHandle) ReadRow(table *MdbTableDef, row uint) int {
 	if !table.NoskipDel && delflag {
 		return 0
 	}
-	fields := make([]MdbField, table.NumCols)
+	numCols := int(table.NumCols)
+	if cap(table.rowFields) < numCols {
+		table.rowFields = make([]MdbField, numCols)
+	}
+	fields := table.rowFields[:numCols]
 	numFields := CrackRow(mdb, table, rowStart, rowSize, fields)
 	if numFields < 0 {
 		return 0
@@ -158,12 +162,18 @@ func CrackRow(mdb *MdbHandle, table *MdbTableDef, rowStart int, rowSize int, fie
 			rowVarCols = GetInt16(pgBuf, rowEnd-bitmaskSz-1)
 		}
 
-		if IS_JET3(mdb) {
-			varColOffsets = mdb.crackRow3(rowStart, rowEnd, bitmaskSz, rowVarCols)
-		} else {
-			varColOffsets = mdb.crackRow4(rowStart, rowEnd, bitmaskSz, rowVarCols)
+		offsetCount := rowVarCols + 1
+		if cap(table.varColOffsets) < offsetCount {
+			table.varColOffsets = make([]int, offsetCount)
 		}
-		if varColOffsets == nil {
+		varColOffsets = table.varColOffsets[:offsetCount]
+		var ok bool
+		if IS_JET3(mdb) {
+			ok = mdb.crackRow3(rowStart, rowEnd, bitmaskSz, rowVarCols, varColOffsets)
+		} else {
+			ok = mdb.crackRow4(rowStart, rowEnd, bitmaskSz, rowVarCols, varColOffsets)
+		}
+		if !ok {
 			return 0
 		}
 	}
@@ -202,18 +212,20 @@ func CrackRow(mdb *MdbHandle, table *MdbTableDef, rowStart int, rowSize int, fie
 	return rowCols
 }
 
-func (mdb *MdbHandle) crackRow4(rowStart int, rowEnd int, bitmaskSz int, rowVarCols int) []int {
+func (mdb *MdbHandle) crackRow4(rowStart int, rowEnd int, bitmaskSz int, rowVarCols int, offsets []int) bool {
 	if bitmaskSz+3+rowVarCols*2+2 > rowEnd {
-		return nil
+		return false
 	}
-	offsets := make([]int, rowVarCols+1)
+	if len(offsets) < rowVarCols+1 {
+		return false
+	}
 	for i := 0; i < rowVarCols+1; i++ {
 		offsets[i] = GetInt16(mdb.PgBuf[:], rowEnd-bitmaskSz-3-i*2)
 	}
-	return offsets
+	return true
 }
 
-func (mdb *MdbHandle) crackRow3(rowStart int, rowEnd int, bitmaskSz int, rowVarCols int) []int {
+func (mdb *MdbHandle) crackRow3(rowStart int, rowEnd int, bitmaskSz int, rowVarCols int, offsets []int) bool {
 	pgBuf := mdb.PgBuf[:]
 	rowLen := rowEnd - rowStart + 1
 	numJumps := (rowLen - 1) / 256
@@ -223,21 +235,23 @@ func (mdb *MdbHandle) crackRow3(rowStart int, rowEnd int, bitmaskSz int, rowVarC
 		numJumps--
 	}
 	if bitmaskSz+numJumps+1 > rowEnd {
-		return nil
+		return false
 	}
 	if colPtr >= mdb.Fmt.PgSize || colPtr < rowVarCols {
-		return nil
+		return false
+	}
+	if len(offsets) < rowVarCols+1 {
+		return false
 	}
 
 	jumpsUsed := 0
-	offsets := make([]int, rowVarCols+1)
 	for i := 0; i < rowVarCols+1; i++ {
 		for jumpsUsed < numJumps && i == int(pgBuf[rowEnd-bitmaskSz-jumpsUsed-1]) {
 			jumpsUsed++
 		}
 		offsets[i] = int(pgBuf[colPtr-i]) + jumpsUsed*256
 	}
-	return offsets
+	return true
 }
 
 func IS_JET3(mdb *MdbHandle) bool {
@@ -253,44 +267,64 @@ func TestSargs(mdb *MdbHandle, table *MdbTableDef, fields []MdbField, numFields 
 
 func AttemptBind(mdb *MdbHandle, table *MdbTableDef, col *MdbColumn, isNull bool, offset int, length int) {
 	col.IsNull = isNull
-	// 每行开始时清空绑定缓冲区：空字符串或零长度字段不会进入后续 copy，
-	// 否则会把上一行的 Name1、Name2 等值错误带入当前行。
-	if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
+	if col.LenPtr != nil {
+		*col.LenPtr = 0
+	}
+	// 没有长度指针的旧调用方仍依赖零结尾缓冲区。提供长度指针的扫描路径
+	// 只读取实际长度，无需为每个字段反复清空整块 MDBBindSize 缓冲区。
+	if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil && col.LenPtr == nil {
 		clear(bindPtr)
 	}
 	if col.ColType == MDBBool {
 		// bool uses null bit for value
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
+			var value string
 			if isNull {
-				copy(bindPtr, []byte(mdb.BooleanTrue))
+				value = mdb.BooleanTrue
 			} else {
-				copy(bindPtr, []byte(mdb.BooleanFalse))
+				value = mdb.BooleanFalse
+			}
+			n := copy(bindPtr, value)
+			terminateBoundValue(bindPtr, n)
+			if col.LenPtr != nil {
+				*col.LenPtr = n
 			}
 		}
 	} else if isNull {
 		col.CurValueStart = 0
 		col.CurValueLen = 0
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
-			bindPtr[0] = 0
+			terminateBoundValue(bindPtr, 0)
 		}
 	} else if col.ColType == MDBOle {
 		col.CurValueStart = offset
 		col.CurValueLen = length
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
-			copy(bindPtr, mdb.PgBuf[offset:offset+MDBMemoOverhead])
+			n := copy(bindPtr, mdb.PgBuf[offset:offset+MDBMemoOverhead])
+			if col.LenPtr != nil {
+				*col.LenPtr = n
+			}
 		}
 	} else {
 		col.CurValueStart = offset
 		col.CurValueLen = length
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil && length > 0 {
 			str := ColToString(mdb, mdb.PgBuf[:], offset, col.ColType, length)
-			n := copy(bindPtr, []byte(str))
-			// 清除残留数据：短数据不会覆盖之前较长数据的旧字节，
-			// 导致 UTF16LEToString 等函数读到脏数据
-			for i := n; i < len(bindPtr); i++ {
-				bindPtr[i] = 0
+			n := copy(bindPtr, str)
+			terminateBoundValue(bindPtr, n)
+			if col.LenPtr != nil {
+				*col.LenPtr = n
 			}
 		}
+	}
+}
+
+func terminateBoundValue(buf []byte, length int) {
+	if length < len(buf) {
+		buf[length] = 0
+	}
+	if length+1 < len(buf) {
+		buf[length+1] = 0
 	}
 }
 

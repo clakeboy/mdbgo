@@ -308,56 +308,29 @@ func (db *DB) readTableBatched(ctx context.Context, tableName string, requestedC
 		return nil, err
 	}
 
-	rows, nulls, err := db.puregoDB.ReadTableData(tableName)
-	if err != nil {
-		return nil, err
-	}
-	hasNulls := len(nulls) == len(rows)
-
 	columns := make([]string, 0, len(schema.Columns))
-	colIndex := make([]int, 0, len(schema.Columns))
 	if len(requestedColumns) > 0 {
 		requestedLower := make(map[string]bool, len(requestedColumns))
 		for _, rc := range requestedColumns {
 			requestedLower[strings.ToLower(rc)] = true
 		}
-		for i, col := range schema.Columns {
+		for _, col := range schema.Columns {
 			if requestedLower[strings.ToLower(col.Name)] {
 				columns = append(columns, col.Name)
-				colIndex = append(colIndex, i)
 			}
 		}
 	} else {
-		for i, col := range schema.Columns {
+		for _, col := range schema.Columns {
 			columns = append(columns, col.Name)
-			colIndex = append(colIndex, i)
 		}
 	}
 
-	result := &TableData{Columns: columns}
-	limit := len(rows)
-	if maxRows > 0 && maxRows < limit {
-		limit = maxRows
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	for r := 0; r < limit; r++ {
-		if r&1023 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		row := make([]string, len(colIndex))
-		nullRow := make([]bool, len(colIndex))
-		for j, ci := range colIndex {
-			if ci < len(rows[r]) {
-				row[j] = rows[r][ci]
-			}
-			if hasNulls && ci < len(nulls[r]) {
-				nullRow[j] = nulls[r][ci]
-			}
-		}
-		result.Rows = append(result.Rows, row)
-		result.Nulls = append(result.Nulls, nullRow)
+	rows, nulls, err := db.puregoDB.ReadTableDataColumnsContext(ctx, tableName, columns, maxRows)
+	if err != nil {
+		return nil, err
 	}
-
-	return result, nil
+	return &TableData{Columns: columns, Rows: rows, Nulls: nulls}, nil
 }

@@ -395,3 +395,43 @@ func TestIsNullBit(t *testing.T) {
 		}
 	}
 }
+
+func TestAttemptBindTracksActualLength(t *testing.T) {
+	mdb := &MdbHandle{
+		BooleanFalse: "0",
+		BooleanTrue:  "1",
+	}
+	buf := make([]byte, 16)
+	for i := range buf {
+		buf[i] = 0x7f
+	}
+	length := 0
+	col := &MdbColumn{
+		ColType: MDBLongInt,
+		BindPtr: buf,
+		LenPtr:  &length,
+	}
+
+	PutInt32(mdb.PgBuf[:], 0, 12345)
+	AttemptBind(mdb, nil, col, false, 0, 4)
+	if got := string(buf[:length]); got != "12345" {
+		t.Fatalf("first bound value = %q, want %q", got, "12345")
+	}
+
+	PutInt32(mdb.PgBuf[:], 0, 7)
+	AttemptBind(mdb, nil, col, false, 0, 4)
+	if got := string(buf[:length]); got != "7" {
+		t.Fatalf("shorter bound value = %q, want %q", got, "7")
+	}
+	if buf[1] != 0 || buf[2] != 0 {
+		t.Fatalf("bound value is not terminated: %x", buf[:4])
+	}
+	if buf[4] != '5' {
+		t.Fatalf("length-aware binding unexpectedly cleared the whole buffer")
+	}
+
+	AttemptBind(mdb, nil, col, true, 0, 0)
+	if length != 0 || buf[0] != 0 || buf[1] != 0 {
+		t.Fatalf("NULL binding length=%d prefix=%x", length, buf[:2])
+	}
+}

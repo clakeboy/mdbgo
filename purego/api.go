@@ -1,6 +1,7 @@
 package purego
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -151,8 +152,22 @@ func (mdb *MDB) GetTableSchema(tableName string) (*TableSchema, error) {
 
 // ReadTableData 读取表数据，返回行数据和 null 标记（与行/列形状相同）。
 func (mdb *MDB) ReadTableData(tableName string) ([][]string, [][]bool, error) {
+	return mdb.ReadTableDataColumns(tableName, nil, 0)
+}
+
+// ReadTableDataColumns 读取指定列的数据。columnNames 为空时读取全部列，
+// maxRows <= 0 时读取全部行。
+func (mdb *MDB) ReadTableDataColumns(tableName string, columnNames []string, maxRows int) ([][]string, [][]bool, error) {
+	return mdb.ReadTableDataColumnsContext(context.Background(), tableName, columnNames, maxRows)
+}
+
+// ReadTableDataColumnsContext 与 ReadTableDataColumns 相同，但会在扫描期间响应取消。
+func (mdb *MDB) ReadTableDataColumnsContext(ctx context.Context, tableName string, columnNames []string, maxRows int) ([][]string, [][]bool, error) {
 	if mdb.handle == nil {
 		return nil, nil, fmt.Errorf("数据库未打开")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
@@ -175,38 +190,78 @@ func (mdb *MDB) ReadTableData(tableName string) ([][]string, [][]bool, error) {
 		return nil, nil, fmt.Errorf("无法读取表 %s 的列", tableName)
 	}
 
-	// 绑定所有列
-	boundValues := make([][]byte, table.NumCols)
-	for i := 0; i < int(table.NumCols); i++ {
+	columnIndexes := make([]int, 0, table.NumCols)
+	if len(columnNames) == 0 {
+		for i := 0; i < int(table.NumCols); i++ {
+			columnIndexes = append(columnIndexes, i)
+		}
+	} else {
+		for _, name := range columnNames {
+			index := -1
+			for i, col := range table.Columns {
+				if strings.EqualFold(col.Name, name) {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				return nil, nil, fmt.Errorf("表 %s 中不存在列 %s", tableName, name)
+			}
+			columnIndexes = append(columnIndexes, index)
+		}
+	}
+
+	// 只绑定调用方需要的列，并记录每行转换后的实际字节长度。
+	boundValues := make([][]byte, len(columnIndexes))
+	boundLengths := make([]int, len(columnIndexes))
+	for i, columnIndex := range columnIndexes {
 		boundValues[i] = make([]byte, MDBBindSize)
-		ret := table.BindColumn(i+1, boundValues[i], nil)
+		ret := table.BindColumn(columnIndex+1, boundValues[i], &boundLengths[i])
 		if ret == -1 {
 			boundValues[i] = nil
 		}
 	}
 
-	// 读取所有行
-	nCols := int(table.NumCols)
-	var result [][]string
-	var nulls [][]bool
+	nCols := len(columnIndexes)
+	capacity := int(table.NumRows)
+	if maxRows > 0 && (capacity == 0 || maxRows < capacity) {
+		capacity = maxRows
+	}
+	result := make([][]string, 0, capacity)
+	nulls := make([][]bool, 0, capacity)
 	table.RewindTable()
 	for table.FetchRow() {
+		if len(result)&1023 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		row := make([]string, nCols)
 		nullRow := make([]bool, nCols)
-		for i := 0; i < nCols; i++ {
-			col := table.Columns[i]
+		for i, columnIndex := range columnIndexes {
+			col := table.Columns[columnIndex]
 			if col.IsNull {
 				nullRow[i] = true
 			} else if boundValues[i] != nil {
+				length := boundLengths[i]
+				if length < 0 {
+					length = 0
+				} else if length > len(boundValues[i]) {
+					length = len(boundValues[i])
+				}
+				value := boundValues[i][:length]
 				if col.ColType == MDBText || col.ColType == MDBMemo {
-					row[i] = UTF16LEToString(boundValues[i])
+					row[i] = UTF16LEToString(value)
 				} else {
-					row[i] = strings.TrimRight(string(boundValues[i]), "\x00")
+					row[i] = string(value)
 				}
 			}
 		}
 		result = append(result, row)
 		nulls = append(nulls, nullRow)
+		if maxRows > 0 && len(result) >= maxRows {
+			break
+		}
 	}
 
 	return result, nulls, nil

@@ -1,6 +1,7 @@
 package purego
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -178,6 +179,89 @@ func TestReadTableData(t *testing.T) {
 			break
 		}
 		t.Logf("  Row %d: %v", i, row)
+	}
+}
+
+func TestReadTableDataColumnsProjectionAndLimit(t *testing.T) {
+	mdb := openTestMDB(t)
+	defer mdb.Close()
+
+	const tableName = "t_abi_hbl"
+	schema, err := mdb.GetTableSchema(tableName)
+	if err != nil {
+		t.Fatalf("GetTableSchema(%s) error = %v", tableName, err)
+	}
+	if len(schema.Columns) < 2 {
+		t.Skip("fixture table has fewer than two columns")
+	}
+
+	allRows, allNulls, err := mdb.ReadTableData(tableName)
+	if err != nil {
+		t.Fatalf("ReadTableData(%s) error = %v", tableName, err)
+	}
+	const limit = 7
+	selectedIndexes := []int{0, len(schema.Columns) - 1}
+	selectedNames := []string{
+		schema.Columns[selectedIndexes[0]].Name,
+		schema.Columns[selectedIndexes[1]].Name,
+	}
+	rows, nulls, err := mdb.ReadTableDataColumns(tableName, selectedNames, limit)
+	if err != nil {
+		t.Fatalf("ReadTableDataColumns(%s) error = %v", tableName, err)
+	}
+	wantRows := limit
+	if len(allRows) < wantRows {
+		wantRows = len(allRows)
+	}
+	if len(rows) != wantRows || len(nulls) != wantRows {
+		t.Fatalf("projected rows/nulls = %d/%d, want %d", len(rows), len(nulls), wantRows)
+	}
+	for rowIndex := 0; rowIndex < wantRows; rowIndex++ {
+		for selectedIndex, sourceIndex := range selectedIndexes {
+			if rows[rowIndex][selectedIndex] != allRows[rowIndex][sourceIndex] {
+				t.Fatalf("row %d column %d = %q, want %q",
+					rowIndex, selectedIndex, rows[rowIndex][selectedIndex], allRows[rowIndex][sourceIndex])
+			}
+			if nulls[rowIndex][selectedIndex] != allNulls[rowIndex][sourceIndex] {
+				t.Fatalf("row %d column %d null = %v, want %v",
+					rowIndex, selectedIndex, nulls[rowIndex][selectedIndex], allNulls[rowIndex][sourceIndex])
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := mdb.ReadTableDataColumnsContext(ctx, tableName, selectedNames, limit); err != context.Canceled {
+		t.Fatalf("canceled scan error = %v, want %v", err, context.Canceled)
+	}
+}
+
+func BenchmarkReadTableData(b *testing.B) {
+	mdb := openTestMDB(b)
+	defer mdb.Close()
+	if _, err := mdb.GetTableSchema("t_abi_hbl"); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := mdb.ReadTableData("t_abi_hbl"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkReadTableDataColumnsLimit(b *testing.B) {
+	mdb := openTestMDB(b)
+	defer mdb.Close()
+	columns := []string{"abi_hbl_id", "house_no"}
+	if _, err := mdb.GetTableSchema("t_abi_hbl"); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := mdb.ReadTableDataColumns("t_abi_hbl", columns, 100); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -365,7 +449,7 @@ func TestQuerySimple(t *testing.T) {
 }
 
 // openTestMDB is a test helper that opens the standard test MDB file.
-func openTestMDB(t *testing.T) *MDB {
+func openTestMDB(t testing.TB) *MDB {
 	t.Helper()
 	if _, err := os.Stat(testMDBPath); os.IsNotExist(err) {
 		t.Skip("test MDB file not found:", testMDBPath)
