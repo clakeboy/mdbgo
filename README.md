@@ -1,10 +1,9 @@
-# mdbgo (bundled mode)
+# mdbgo
 
-`mdbgo` 是一个可直接被其它 Go 项目引用的 MDB 读取库。
+`mdbgo` 是一个纯 Go 实现的 MDB 读取库，无 CGO 依赖，跨平台编译开箱即用。
 
-- 使用 `bundled` 模式：构建时直接编译仓库内的 `libmdb` C 源码
-- 调用方不需要额外安装系统级 `libmdb`
-- 当前提供只读能力：打开数据库、列出表和 View、还原 View SQL、读取整张表、读取 Access 窗体内容
+- 基于纯 Go 的 `libmdb` 实现，构建时不需要 C 编译器或系统级 `libmdb`
+- 提供只读能力：打开数据库、列出表和 View、还原 View SQL、读取整张表、读取 Access 窗体内容
 - 内置 Go 只读 SQL 引擎：支持参数、JOIN、聚合、排序、UNION、子查询、保存查询和分页
 
 源码按职责拆分：`mdbgo.go` 只保留连接生命周期，`sql.go` 负责表和 SQL 数据读取，`form.go` 负责 Form 公共入口，`form_storage.go/form_layout.go` 负责内部存储与布局；各已实现的控件解析器位于独立的 `form_component_<type>.go` 文件中。
@@ -118,7 +117,6 @@ func main() {
 ## API
 
 - `Open(path string) (*DB, error)`
-- `OpenWithOptions(path string, OpenOptions) (*DB, error)`：可通过 `MaxConcurrentQueries` 设置同一 DB 的最大并发查询数
 - `(*DB).Close() error`
 - `DB.Format DatabaseFormat`：当前打开文件的格式信息，包括 `Name/Engine/Version/PageSize/ObjectStorage`
 - `(*DB).Tables() ([]string, error)`
@@ -160,30 +158,16 @@ func main() {
 常用表达式包括 Access 三值 NULL 逻辑、`LIKE` 通配符、`BETWEEN`、`IN`、日期字面量、
 字符串连接，以及 `IIf/Nz/DatePart/Format/Left/Right/Mid/Len` 等函数。
 
-查询使用 1024 行批次跨越 CGO，并只绑定引用列；简单 `TOP/LIMIT` 会提前停止扫描，
+查询按 1024 行批次检查上下文取消，并只绑定引用列；简单 `TOP/LIMIT` 会提前停止扫描，
 等值连接使用 Hash Join。`INSERT/UPDATE/DELETE/DDL`、Pass-through、VBA 自定义函数、
 外部数据库 `IN` 和 `TRANSFORM/PIVOT` 尚不支持，遇到时返回明确错误。
 
 ## 并发查询
 
 `Query`、`QueryContext`、`QueryViewContext`、`QueryPageContext` 和
-`PreparePagerContext` 可以在同一个 `*DB` 上由多个 goroutine 并发调用。实现会为每个
-正在运行的查询租用独立的 mdbtools 句柄，并在查询完成后放回池中复用，避免共享
-`MdbHandle` 页缓冲区产生数据竞争。
-
-默认并发数取 `GOMAXPROCS`，最少 2、最多 8；显式配置上限为 64。可按数据库大小和
-可用内存限制：
-
-```go
-db, err := mdbgo.OpenWithOptions("example.mdb", mdbgo.OpenOptions{
-    MaxConcurrentQueries: 4,
-})
-```
-
-超过并发上限的查询会等待空闲句柄，等待过程响应 `context.Context` 取消。`Close`
-会拒绝新查询，并等待已经开始的查询完成后释放全部池化句柄。`Tables`、
-`Views`、`Schema`、`ReadTable` 和 Form 读取接口仍使用主句柄，不应与彼此或 `Close`
-并发调用。
+`PreparePagerContext` 可以在同一个 `*DB` 上由多个 goroutine 并发调用。实现使用
+纯 Go 的 `MdbHandle` 句柄，每次查询使用独立的上下文，不共享页缓冲区，因此
+不存在数据竞争。
 
 ## 测试导出 Access 原生结构 JSON
 
@@ -203,8 +187,8 @@ go test -run TestExportFormAsAccessJSON -v -count=1
 
 ## 说明
 
-- 为了简化跨平台构建，bundled 模式默认关闭 `iconv`。
-- 当前 `DB` 句柄按串行访问设计，不保证并发安全。
+- 当前 `DB` 句柄的元数据操作（`Tables`/`Views`/`Schema`/`ReadTable`/Form 读取接口）按串行访问设计，不应与彼此或 `Close` 并发调用。
+- 查询类方法（`Query`/`QueryContext`/`QueryViewContext`/`QueryPageContext`/`PreparePagerContext`）可并发调用。
 - `Query` 不允许 `CONNECT` / `DISCONNECT` 语句。
 - Jet4 MDB 已支持 `RecordSource`、窗体 `Width`，以及控件 `Name/Type/Left/Top/Width/Height/Caption/ControlSource/Format/Tag/FontName/FontSize/StatusBarText/TextAlign/TabIndex` 等常用内容。
 - `TextAlignValue/BackColorValue/ForeColorValue` 保留 Access Interop 原生数值；`TextAlign/BackColor/ForeColor/BackGroundColor` 提供便于直接使用的文本值。`f_abia_master` 的 36 个 TextBox 和 35 个原生 Label 已分别通过 Windows 导出 JSON 的字段级对照。
