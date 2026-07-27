@@ -24,7 +24,6 @@ db
 *.pid
 *.mongodb.js
 assets/html
-go.sum
 .DS_Store
 publish
 __debug*

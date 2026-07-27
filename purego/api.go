@@ -98,8 +98,8 @@ type ColumnSchema struct {
 }
 
 type TableSchema struct {
-	Name    string
-	Columns []ColumnSchema
+	Name     string
+	Columns  []ColumnSchema
 	RowCount uint
 }
 
@@ -110,8 +110,8 @@ func (mdb *MDB) GetTableSchema(tableName string) (*TableSchema, error) {
 	}
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
-	if entry == nil {
-		// 重试一次，确保目录中有表类型条目
+	if entry == nil || entry.ObjectType != MDBTable {
+		// 当前目录可能刚被 Views 刷新为查询条目；按表目录重新定位同名物理表。
 		mdb.handle.ReadCatalog(MDBTable)
 		entry = mdb.handle.GetCatalogEntryByName(tableName)
 	}
@@ -157,6 +157,7 @@ func (mdb *MDB) ReadTableData(tableName string) ([][]string, [][]bool, error) {
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
 	if entry == nil || entry.ObjectType != MDBTable {
+		// 同名保存查询会覆盖当前目录查找结果，重新加载物理表目录后再读取数据。
 		mdb.handle.ReadCatalog(MDBTable)
 		entry = mdb.handle.GetCatalogEntryByName(tableName)
 	}
@@ -219,6 +220,7 @@ func (mdb *MDB) RowCount(tableName string) (int, error) {
 
 	entry := mdb.handle.GetCatalogEntryByName(tableName)
 	if entry == nil || entry.ObjectType != MDBTable {
+		// 当前目录可能由查询 API 填充，行数读取必须使用物理表对应的目录条目。
 		mdb.handle.ReadCatalog(MDBTable)
 		entry = mdb.handle.GetCatalogEntryByName(tableName)
 	}

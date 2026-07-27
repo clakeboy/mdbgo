@@ -253,6 +253,11 @@ func TestSargs(mdb *MdbHandle, table *MdbTableDef, fields []MdbField, numFields 
 
 func AttemptBind(mdb *MdbHandle, table *MdbTableDef, col *MdbColumn, isNull bool, offset int, length int) {
 	col.IsNull = isNull
+	// 每行开始时清空绑定缓冲区：空字符串或零长度字段不会进入后续 copy，
+	// 否则会把上一行的 Name1、Name2 等值错误带入当前行。
+	if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
+		clear(bindPtr)
+	}
 	if col.ColType == MDBBool {
 		// bool uses null bit for value
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {

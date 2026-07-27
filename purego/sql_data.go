@@ -14,6 +14,12 @@ type viewRow struct {
 	Expression string
 }
 
+// relationshipColumn 保存 MSysRelationships 中一组 Access 关系字段。
+type relationshipColumn struct {
+	SourceColumn string
+	TargetColumn string
+}
+
 func (mdb *MDB) ViewSQL(viewName string) (string, error) {
 	if strings.TrimSpace(viewName) == "" {
 		return "", fmt.Errorf("view name is empty")
@@ -56,12 +62,14 @@ func (mdb *MDB) ViewSQL(viewName string) (string, error) {
 	name2Buf := make([]byte, MDBBindSize)
 	oidBuf := make([]byte, MDBBindSize)
 
-	if mdb.handle.BindColumnByName(table, "Attribute", attrBuf, nil) == -1 ||
-		mdb.handle.BindColumnByName(table, "Expression", exprBuf, nil) == -1 ||
-		mdb.handle.BindColumnByName(table, "Flag", flagBuf, nil) == -1 ||
-		mdb.handle.BindColumnByName(table, "Name1", name1Buf, nil) == -1 ||
-		mdb.handle.BindColumnByName(table, "Name2", name2Buf, nil) == -1 ||
-		mdb.handle.BindColumnByName(table, "ObjectId", oidBuf, nil) == -1 {
+	attributeIndex := mdb.handle.BindColumnByName(table, "Attribute", attrBuf, nil)
+	expressionIndex := mdb.handle.BindColumnByName(table, "Expression", exprBuf, nil)
+	flagIndex := mdb.handle.BindColumnByName(table, "Flag", flagBuf, nil)
+	name1Index := mdb.handle.BindColumnByName(table, "Name1", name1Buf, nil)
+	name2Index := mdb.handle.BindColumnByName(table, "Name2", name2Buf, nil)
+	objectIDIndex := mdb.handle.BindColumnByName(table, "ObjectId", oidBuf, nil)
+	if attributeIndex == -1 || expressionIndex == -1 || flagIndex == -1 ||
+		name1Index == -1 || name2Index == -1 || objectIDIndex == -1 {
 		return "", fmt.Errorf("MSysQueries 列绑定失败")
 	}
 
@@ -102,12 +110,16 @@ func (mdb *MDB) ViewSQL(viewName string) (string, error) {
 		flagStr := strings.TrimRight(string(flagBuf), "\x00")
 		attr, _ := strconv.Atoi(attrStr)
 		flag, _ := strconv.Atoi(flagStr)
+		expression, err := mdb.memoColumnString(table.Columns[expressionIndex-1])
+		if err != nil {
+			return "", fmt.Errorf("读取 View %s 的 Expression: %w", viewName, err)
+		}
 		rows = append(rows, viewRow{
 			Attribute:  attr,
 			Flag:       flag,
 			Name1:      UTF16LEToString(name1Buf),
 			Name2:      UTF16LEToString(name2Buf),
-			Expression: UTF16LEToString(exprBuf),
+			Expression: expression,
 		})
 	}
 
@@ -115,10 +127,32 @@ func (mdb *MDB) ViewSQL(viewName string) (string, error) {
 		return "", fmt.Errorf("视图 %s 的查询定义为空", viewName)
 	}
 
-	return buildViewSQL(rows, viewEntry.Flags)
+	return mdb.buildViewSQL(rows, viewEntry.Flags)
 }
 
-func buildViewSQL(rows []viewRow, flags int) (string, error) {
+// memoColumnString 读取当前行的完整 Memo 值；MSysQueries.Expression 经常存储在长值页中。
+func (mdb *MDB) memoColumnString(column *MdbColumn) (string, error) {
+	if column == nil || column.IsNull || column.CurValueLen == 0 {
+		return "", nil
+	}
+	if column.CurValueStart < 0 || column.CurValueStart+MDBMemoOverhead > mdb.handle.Fmt.PgSize {
+		return "", fmt.Errorf("Memo 指针越界")
+	}
+	// 长值读取器需要原始 12 字节头；普通绑定缓冲区仅保存了格式化后的字符串。
+	originalBind := column.BindPtr
+	header := make([]byte, MDBMemoOverhead)
+	copy(header, mdb.handle.PgBuf[column.CurValueStart:column.CurValueStart+MDBMemoOverhead])
+	column.BindPtr = header
+	data, err := mdb.handle.ReadOleFullData(column)
+	column.BindPtr = originalBind
+	if err != nil {
+		return "", err
+	}
+	return UTF16LEToString(data), nil
+}
+
+// buildViewSQL 按 Access 的 MSysQueries 定义重建可由 Go SQL 引擎执行的 SELECT 语句。
+func (mdb *MDB) buildViewSQL(rows []viewRow, flags int) (string, error) {
 	var sb strings.Builder
 
 	for _, r := range rows {
@@ -162,16 +196,11 @@ func buildViewSQL(rows []viewRow, flags int) (string, error) {
 
 	hasCols := false
 	for _, r := range rows {
-		if r.Attribute == 6 {
+		if r.Attribute == 6 && strings.TrimSpace(r.Expression) != "" {
 			if hasCols {
 				sb.WriteString(", ")
 			}
-			expr := r.Expression
-			if expr == "*" || expr == "" {
-				sb.WriteString("*")
-			} else {
-				sb.WriteString(expr)
-			}
+			sb.WriteString(r.Expression)
 			hasCols = true
 		}
 	}
@@ -179,7 +208,10 @@ func buildViewSQL(rows []viewRow, flags int) (string, error) {
 		sb.WriteString("*")
 	}
 
-	fromParts := buildFromClause(rows)
+	fromParts, err := mdb.buildFromClause(rows)
+	if err != nil {
+		return "", err
+	}
 	if fromParts != "" {
 		sb.WriteString("\nFROM " + fromParts)
 	}
@@ -230,7 +262,9 @@ func buildViewSQL(rows []viewRow, flags int) (string, error) {
 	return sb.String(), nil
 }
 
-func buildFromClause(rows []viewRow) string {
+// buildFromClause 还原表源与 JOIN；部分 Jet 数据库在 JOIN 行中只记录表名，
+// 此时从两侧表结构推导唯一的同名关系字段。
+func (mdb *MDB) buildFromClause(rows []viewRow) (string, error) {
 	type tableSource struct {
 		sql  string
 		keys []string
@@ -238,6 +272,9 @@ func buildFromClause(rows []viewRow) string {
 
 	var tables []tableSource
 	var joins []viewRow
+	// sourceTableNames 将查询中实际引用的名称映射回物理表名。
+	// 有别名时，后续 JOIN 必须用别名生成 SQL，却要用物理表读取字段结构。
+	sourceTableNames := make(map[string]string)
 
 	for _, r := range rows {
 		if r.Attribute == 5 {
@@ -255,6 +292,7 @@ func buildFromClause(rows []viewRow) string {
 				key = r.Name2
 			}
 			t.keys = []string{key}
+			sourceTableNames[strings.ToLower(key)] = r.Name1
 			tables = append(tables, t)
 		}
 		if r.Attribute == 7 {
@@ -263,7 +301,7 @@ func buildFromClause(rows []viewRow) string {
 	}
 
 	if len(tables) == 0 {
-		return ""
+		return "", nil
 	}
 
 	for _, j := range joins {
@@ -282,32 +320,230 @@ func buildFromClause(rows []viewRow) string {
 			}
 		}
 		if leftIdx < 0 || rightIdx < 0 {
-			continue
+			return "", fmt.Errorf("view join references an unknown table: %s -> %s", leftKey, rightKey)
 		}
-		if leftIdx > rightIdx {
-			leftIdx, rightIdx = rightIdx, leftIdx
+		if leftIdx == rightIdx {
+			return "", fmt.Errorf("view join is cyclic: %s -> %s", leftKey, rightKey)
 		}
 		joinType := "INNER JOIN"
 		if j.Flag == 2 {
 			joinType = "LEFT JOIN"
 		} else if j.Flag == 3 {
 			joinType = "RIGHT JOIN"
+		} else if j.Flag != 1 {
+			return "", fmt.Errorf("unknown Access join type: %d", j.Flag)
 		}
 
 		leftTable := tables[leftIdx].sql
 		rightTable := tables[rightIdx].sql
-		combined := "(" + leftTable + " " + joinType + " " + rightTable + " ON (" + j.Expression + "))"
+		condition := strings.TrimSpace(j.Expression)
+		if condition == "" {
+			leftTableName, leftOK := sourceTableNames[strings.ToLower(leftKey)]
+			rightTableName, rightOK := sourceTableNames[strings.ToLower(rightKey)]
+			if !leftOK || !rightOK {
+				return "", fmt.Errorf("view join source table is unavailable: %s -> %s", leftKey, rightKey)
+			}
+			var err error
+			condition, err = mdb.inferJoinCondition(leftKey, rightKey, leftTableName, rightTableName)
+			if err != nil {
+				return "", err
+			}
+		}
+		combined := "(" + leftTable + " " + joinType + " " + rightTable + " ON (" + condition + "))"
 
-		combinedKeys := append(tables[leftIdx].keys, tables[rightIdx].keys...)
-		tables[leftIdx] = tableSource{sql: combined, keys: combinedKeys}
-		tables = append(tables[:rightIdx], tables[rightIdx+1:]...)
+		combinedKeys := append(append([]string{}, tables[leftIdx].keys...), tables[rightIdx].keys...)
+		// 保存位置与构造 JOIN 的左右顺序彼此独立，避免为删除切片元素而反转 LEFT/RIGHT JOIN 语义。
+		replaceIdx, removeIdx := leftIdx, rightIdx
+		if replaceIdx > removeIdx {
+			replaceIdx, removeIdx = removeIdx, replaceIdx
+		}
+		tables[replaceIdx] = tableSource{sql: combined, keys: combinedKeys}
+		tables = append(tables[:removeIdx], tables[removeIdx+1:]...)
 	}
 
 	parts := make([]string, len(tables))
 	for i, t := range tables {
 		parts[i] = t.sql
 	}
-	return strings.Join(parts, ", ")
+	return strings.Join(parts, ", "), nil
+}
+
+// inferJoinCondition 为缺少 Expression 的 Jet JOIN 行推导关系字段。
+// reference 名称用于输出 SQL，physical 名称用于读取实际的表结构和关系系统表。
+func (mdb *MDB) inferJoinCondition(leftReference string, rightReference string, leftPhysicalTable string, rightPhysicalTable string) (string, error) {
+	relationshipColumns, err := mdb.relationshipColumns(leftPhysicalTable, rightPhysicalTable)
+	if err != nil {
+		return "", err
+	}
+	if len(relationshipColumns) > 0 {
+		conditions := make([]string, 0, len(relationshipColumns))
+		for _, column := range relationshipColumns {
+			conditions = append(conditions, leftReference+"."+column.SourceColumn+"="+rightReference+"."+column.TargetColumn)
+		}
+		return strings.Join(conditions, " AND "), nil
+	}
+
+	leftSchema, err := mdb.GetTableSchema(leftPhysicalTable)
+	if err != nil {
+		return "", fmt.Errorf("read join source table %s: %w", leftPhysicalTable, err)
+	}
+	rightSchema, err := mdb.GetTableSchema(rightPhysicalTable)
+	if err != nil {
+		return "", fmt.Errorf("read join target table %s: %w", rightPhysicalTable, err)
+	}
+	rightColumns := make(map[string]string, len(rightSchema.Columns))
+	for _, column := range rightSchema.Columns {
+		rightColumns[strings.ToLower(column.Name)] = column.Name
+	}
+	sharedIDColumns := make([]string, 0)
+	sharedColumns := make([]string, 0)
+	for _, column := range leftSchema.Columns {
+		columnName := strings.TrimSpace(column.Name)
+		if columnName == "" {
+			continue
+		}
+		rightColumn, ok := rightColumns[strings.ToLower(columnName)]
+		if !ok {
+			continue
+		}
+		condition := leftReference + "." + columnName + "=" + rightReference + "." + rightColumn
+		sharedColumns = append(sharedColumns, condition)
+		if strings.HasSuffix(strings.ToLower(columnName), "_id") {
+			sharedIDColumns = append(sharedIDColumns, condition)
+		}
+	}
+	if len(sharedIDColumns) == 1 {
+		return sharedIDColumns[0], nil
+	}
+	if len(sharedColumns) == 1 {
+		return sharedColumns[0], nil
+	}
+	if len(sharedIDColumns) > 1 {
+		return "", fmt.Errorf("cannot infer ambiguous join %s -> %s: %d shared ID fields", leftReference, rightReference, len(sharedIDColumns))
+	}
+	if condition, ok := inferSimilarJoinCondition(leftReference, rightReference, leftSchema, rightSchema); ok {
+		return condition, nil
+	}
+	return "", fmt.Errorf("cannot infer join %s -> %s: %d shared fields", leftReference, rightReference, len(sharedColumns))
+}
+
+// inferSimilarJoinCondition 处理 Access 查询常见的“业务字段连接代码表”场景，
+// 例如 bl_sort_no 与 bl_no_type_id。只有同类型且至少共享两个语义分词的唯一候选才采用。
+func inferSimilarJoinCondition(leftTable string, rightTable string, leftSchema *TableSchema, rightSchema *TableSchema) (string, bool) {
+	bestScore := 0
+	bestMatches := 0
+	bestCondition := ""
+	ambiguous := false
+	for _, leftColumn := range leftSchema.Columns {
+		for _, rightColumn := range rightSchema.Columns {
+			if leftColumn.Type != rightColumn.Type {
+				continue
+			}
+			matches := sharedColumnTokenCount(leftColumn.Name, rightColumn.Name)
+			if matches < 2 {
+				continue
+			}
+			score := matches*10 + 1
+			condition := leftTable + "." + leftColumn.Name + "=" + rightTable + "." + rightColumn.Name
+			if score > bestScore {
+				bestScore = score
+				bestMatches = matches
+				bestCondition = condition
+				ambiguous = false
+				continue
+			}
+			if score == bestScore && condition != bestCondition {
+				ambiguous = true
+			}
+		}
+	}
+	if bestMatches < 2 || ambiguous {
+		return "", false
+	}
+	return bestCondition, true
+}
+
+// sharedColumnTokenCount 按下划线分解字段名并统计共有语义词，避免仅凭通用 id/code 误匹配。
+func sharedColumnTokenCount(leftName string, rightName string) int {
+	leftTokens := make(map[string]struct{})
+	for _, token := range strings.Split(strings.ToLower(leftName), "_") {
+		if token != "" {
+			leftTokens[token] = struct{}{}
+		}
+	}
+	matches := 0
+	for _, token := range strings.Split(strings.ToLower(rightName), "_") {
+		if _, ok := leftTokens[token]; ok {
+			matches++
+		}
+	}
+	return matches
+}
+
+// relationshipColumns 从 SysRel 或 MSysRelationships 读取两张表之间的关系字段，
+// 并统一转换为 leftTable 到 rightTable 的字段方向。
+func (mdb *MDB) relationshipColumns(leftTable string, rightTable string) ([]relationshipColumn, error) {
+	if mdb == nil || mdb.handle == nil {
+		return nil, fmt.Errorf("database is closed")
+	}
+	entries := mdb.handle.ReadCatalog(MDBAny)
+	var relationshipEntry *MdbCatalogEntry
+	for _, entry := range entries {
+		if entry != nil && strings.EqualFold(entry.ObjectName, "SysRel") {
+			relationshipEntry = entry
+			break
+		}
+	}
+	if relationshipEntry == nil {
+		for _, entry := range entries {
+			if entry != nil && strings.EqualFold(entry.ObjectName, "MSysRelationships") {
+				relationshipEntry = entry
+				break
+			}
+		}
+	}
+	if relationshipEntry == nil {
+		return nil, nil
+	}
+	table := mdb.handle.ReadTable(relationshipEntry)
+	if table == nil {
+		return nil, fmt.Errorf("read relationship system table")
+	}
+	defer mdb.handle.FreeTableDef(table)
+	if mdb.handle.ReadColumns(table) == nil {
+		return nil, fmt.Errorf("read relationship system table columns")
+	}
+
+	objectBuf := make([]byte, MDBBindSize)
+	columnBuf := make([]byte, MDBBindSize)
+	referencedObjectBuf := make([]byte, MDBBindSize)
+	referencedColumnBuf := make([]byte, MDBBindSize)
+	if mdb.handle.BindColumnByName(table, "szObject", objectBuf, nil) == -1 ||
+		mdb.handle.BindColumnByName(table, "szColumn", columnBuf, nil) == -1 ||
+		mdb.handle.BindColumnByName(table, "szReferencedObject", referencedObjectBuf, nil) == -1 ||
+		mdb.handle.BindColumnByName(table, "szReferencedColumn", referencedColumnBuf, nil) == -1 {
+		return nil, fmt.Errorf("bind relationship system table columns")
+	}
+
+	result := make([]relationshipColumn, 0)
+	table.RewindTable()
+	for table.FetchRow() {
+		objectName := strings.TrimSpace(UTF16LEToString(objectBuf))
+		columnName := strings.TrimSpace(UTF16LEToString(columnBuf))
+		referencedObjectName := strings.TrimSpace(UTF16LEToString(referencedObjectBuf))
+		referencedColumnName := strings.TrimSpace(UTF16LEToString(referencedColumnBuf))
+		if objectName == "" || columnName == "" || referencedObjectName == "" || referencedColumnName == "" {
+			continue
+		}
+		if strings.EqualFold(objectName, leftTable) && strings.EqualFold(referencedObjectName, rightTable) {
+			result = append(result, relationshipColumn{SourceColumn: columnName, TargetColumn: referencedColumnName})
+			continue
+		}
+		if strings.EqualFold(objectName, rightTable) && strings.EqualFold(referencedObjectName, leftTable) {
+			result = append(result, relationshipColumn{SourceColumn: referencedColumnName, TargetColumn: columnName})
+		}
+	}
+	return result, nil
 }
 
 func paramTypeName(flag int) string {
