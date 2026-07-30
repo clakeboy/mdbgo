@@ -13,15 +13,22 @@ import (
 
 // DatabaseFormat 描述当前打开的 Access 数据库文件格式。
 type DatabaseFormat struct {
-	Name           string
-	Engine         string
-	Version        int
-	PageSize       int
-	ObjectStorage  string
+	Name          string
+	Engine        string
+	Version       int
+	PageSize      int
+	ObjectStorage string
 }
 
 func (format DatabaseFormat) String() string {
 	return format.Name
+}
+
+// OpenOptions controls resources owned by a DB.
+type OpenOptions struct {
+	// MaxConcurrentQueries is the maximum number of Query-family calls that
+	// may execute at once. Zero selects a runtime-derived default.
+	MaxConcurrentQueries int
 }
 
 // DB 表示一个 MDB 数据库连接句柄。
@@ -32,8 +39,9 @@ type DB struct {
 
 	Format DatabaseFormat
 
-	stateMu sync.Mutex
-	closed  bool
+	stateMu   sync.Mutex
+	closed    bool
+	queryPool *queryHandlePool
 
 	metaMu      sync.Mutex
 	tableCache  []string
@@ -45,10 +53,45 @@ type DB struct {
 
 // Open 打开一个 MDB 文件并返回 DB。
 func Open(path string) (*DB, error) {
+	return OpenWithOptions(path, OpenOptions{})
+}
+
+// OpenWithOptions 打开一个 MDB 文件，并允许配置并发查询句柄数量。
+func OpenWithOptions(path string, options OpenOptions) (*DB, error) {
 	if path == "" {
 		return nil, errors.New("path is empty")
 	}
+	if options.MaxConcurrentQueries < 0 {
+		return nil, errors.New("MaxConcurrentQueries must be >= 0")
+	}
+	if options.MaxConcurrentQueries > maxConfiguredConcurrentQueries {
+		return nil, fmt.Errorf("MaxConcurrentQueries must be <= %d", maxConfiguredConcurrentQueries)
+	}
 
+	db, err := openDBHandle(path)
+	if err != nil {
+		return nil, err
+	}
+
+	format, err := db.detectDatabaseFormat()
+	if err != nil {
+		db.closeQueryHandle()
+		return nil, fmt.Errorf("detect database format: %w", err)
+	}
+	db.Format = format
+	maxQueries := options.MaxConcurrentQueries
+	if maxQueries == 0 {
+		maxQueries = defaultMaxConcurrentQueries()
+	}
+	db.queryPool = newQueryHandlePool(db.path, maxQueries)
+
+	runtime.SetFinalizer(db, func(d *DB) {
+		_ = d.Close()
+	})
+	return db, nil
+}
+
+func openDBHandle(path string) (*DB, error) {
 	pureDB, err := purego.OpenMDB(path)
 	if err != nil {
 		return nil, err
@@ -58,24 +101,11 @@ func Open(path string) (*DB, error) {
 	if absolute, err := filepath.Abs(path); err == nil {
 		identityPath = absolute
 	}
-
-	db := &DB{
+	return &DB{
 		puregoDB: pureDB,
 		handle:   pureDB.GetHandle(),
 		path:     identityPath,
-	}
-
-	format, err := db.detectDatabaseFormat()
-	if err != nil {
-		pureDB.Close()
-		return nil, fmt.Errorf("detect database format: %w", err)
-	}
-	db.Format = format
-
-	runtime.SetFinalizer(db, func(d *DB) {
-		_ = d.Close()
-	})
-	return db, nil
+	}, nil
 }
 
 // OpenPureGo 保留兼容别名，等同 Open。
@@ -173,9 +203,14 @@ func (db *DB) Close() error {
 	pureDB := db.puregoDB
 	db.puregoDB = nil
 	db.handle = nil
+	pool := db.queryPool
+	db.queryPool = nil
 	db.stateMu.Unlock()
 
 	runtime.SetFinalizer(db, nil)
+	if pool != nil {
+		pool.close()
+	}
 	if pureDB != nil {
 		pureDB.Close()
 	}
@@ -187,4 +222,19 @@ func (db *DB) Close() error {
 	db.schemaCache = nil
 	db.metaMu.Unlock()
 	return nil
+}
+
+func (db *DB) closeQueryHandle() {
+	if db == nil {
+		return
+	}
+	db.stateMu.Lock()
+	pureDB := db.puregoDB
+	db.puregoDB = nil
+	db.handle = nil
+	db.closed = true
+	db.stateMu.Unlock()
+	if pureDB != nil {
+		pureDB.Close()
+	}
 }

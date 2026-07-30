@@ -884,15 +884,22 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 	for i := range offsets {
 		offsets[i] = -1
 	}
+	controlNames := make([]string, len(controls))
+	controlNameBytes := make([][]byte, len(controls))
+	for i, control := range controls {
+		controlNames[i] = control.Name
+		controlNameBytes[i] = encodeUTF16LE(control.Name)
+	}
+	tokenOffsets := indexUTF16LETokenOffsets(data, controlNames)
 
 	// TypeInfo 按逻辑层级列出节和控件，而 Blob 中的节标记可能在子控件之后。
 	// 因此先为每个控件独立寻找能通过长度标记文本校验的物理块，不能强制全局单调。
 	firstStructuredOffset := len(data)
 	for i, control := range controls {
-		nameBytes := encodeUTF16LE(control.Name)
+		nameBytes := controlNameBytes[i]
 		bestOffset := -1
 		bestScore := 0
-		for _, off := range findUTF16LETokenOffsets(data, control.Name) {
+		for _, off := range tokenOffsets[i] {
 			if !hasJet4ControlNameBoundary(data, off, len(nameBytes)) {
 				continue
 			}
@@ -917,12 +924,12 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 	if firstStructuredOffset < len(data) && firstStructuredOffset > 512 {
 		designStart = firstStructuredOffset - 512
 	}
-	for i, control := range controls {
+	for i := range controls {
 		if offsets[i] >= 0 {
 			continue
 		}
-		nameBytes := encodeUTF16LE(control.Name)
-		for _, off := range findUTF16LETokenOffsets(data, control.Name) {
+		nameBytes := controlNameBytes[i]
+		for _, off := range tokenOffsets[i] {
 			if off >= designStart && hasJet4ControlNameBoundary(data, off, len(nameBytes)) {
 				offsets[i] = off
 				break
@@ -946,9 +953,9 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 			}
 			bestOffset := -1
 			bestScore := 0
-			for _, off := range findUTF16LETokenOffsets(data, control.Name) {
+			for _, off := range tokenOffsets[i] {
 				if off < firstSectionOffset ||
-					!hasJet4ControlNameBoundary(data, off, len(encodeUTF16LE(control.Name))) {
+					!hasJet4ControlNameBoundary(data, off, len(controlNameBytes[i])) {
 					continue
 				}
 				fields := parseJet4TaggedTextFieldsForType(data[off:], control.Name, control.Type)
@@ -964,6 +971,65 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 		}
 	}
 	return offsets
+}
+
+type indexedUTF16LEToken struct {
+	index   int
+	pattern []byte
+}
+
+// indexUTF16LETokenOffsets 单次扫描 data，为全部 token 建立大小写不敏感的
+// UTF-16LE 命中位置。按前两个 UTF-16 码元分组，避免每个控件都重新扫描完整 Blob。
+func indexUTF16LETokenOffsets(data []byte, tokens []string) [][]int {
+	offsets := make([][]int, len(tokens))
+	if len(data) < 2 || len(tokens) == 0 {
+		return offsets
+	}
+
+	singleUnit := make(map[uint16][]indexedUTF16LEToken)
+	doubleUnit := make(map[uint32][]indexedUTF16LEToken)
+	for i, token := range tokens {
+		pattern := encodeUTF16LE(token)
+		if len(pattern) < 2 {
+			continue
+		}
+		indexed := indexedUTF16LEToken{index: i, pattern: pattern}
+		first := foldASCIIUTF16Unit(le16(pattern))
+		if len(pattern) == 2 {
+			singleUnit[first] = append(singleUnit[first], indexed)
+			continue
+		}
+		second := foldASCIIUTF16Unit(le16(pattern[2:]))
+		key := uint32(first) | uint32(second)<<16
+		doubleUnit[key] = append(doubleUnit[key], indexed)
+	}
+
+	for off := 0; off+2 <= len(data); off++ {
+		first := foldASCIIUTF16Unit(le16(data[off:]))
+		for _, token := range singleUnit[first] {
+			if hasUTF16LEPrefixFoldASCII(data[off:], token.pattern) {
+				offsets[token.index] = append(offsets[token.index], off)
+			}
+		}
+		if off+4 > len(data) {
+			continue
+		}
+		second := foldASCIIUTF16Unit(le16(data[off+2:]))
+		key := uint32(first) | uint32(second)<<16
+		for _, token := range doubleUnit[key] {
+			if hasUTF16LEPrefixFoldASCII(data[off:], token.pattern) {
+				offsets[token.index] = append(offsets[token.index], off)
+			}
+		}
+	}
+	return offsets
+}
+
+func foldASCIIUTF16Unit(value uint16) uint16 {
+	if value >= 'A' && value <= 'Z' {
+		return value + ('a' - 'A')
+	}
+	return value
 }
 
 func jet4TaggedTextFieldsMatchControlType(controlType string, fields []jet4TaggedTextField) bool {
@@ -1363,14 +1429,8 @@ func hasUTF16LEPrefixFoldASCII(data, pattern []byte) bool {
 		return false
 	}
 	for pos := 0; pos < len(pattern); pos += 2 {
-		actual := le16(data[pos:])
-		expected := le16(pattern[pos:])
-		if actual >= 'A' && actual <= 'Z' {
-			actual += 'a' - 'A'
-		}
-		if expected >= 'A' && expected <= 'Z' {
-			expected += 'a' - 'A'
-		}
+		actual := foldASCIIUTF16Unit(le16(data[pos:]))
+		expected := foldASCIIUTF16Unit(le16(pattern[pos:]))
 		if actual != expected {
 			return false
 		}

@@ -200,9 +200,9 @@ func (mdb *MdbHandle) ColToString(buf []byte, start int, dataType int, size int)
 	case MDBByte:
 		return fmt.Sprintf("%d", buf[start])
 	case MDBInt:
-		return fmt.Sprintf("%d", GetInt16(buf, start))
+		return fmt.Sprintf("%d", int16(GetInt16(buf, start)))
 	case MDBLongInt:
-		return fmt.Sprintf("%d", GetInt32(buf, start))
+		return fmt.Sprintf("%d", int32(GetInt32(buf, start)))
 	case MDBFloat:
 		return fmt.Sprintf("%g", GetSingle(buf, start))
 	case MDBDouble:

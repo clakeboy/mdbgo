@@ -264,6 +264,8 @@ func TestColToString(t *testing.T) {
 		{"Boolean true", []byte{0x01}, 0, MDBBool, 1, "yes"},
 		{"Boolean false", []byte{0x00}, 0, MDBBool, 1, "no"},
 		{"Byte", []byte{0x0A}, 0, MDBByte, 1, "10"},
+		{"Integer negative", []byte{0xED, 0xFF}, 0, MDBInt, 2, "-19"},
+		{"Long integer negative", []byte{0xED, 0xFF, 0xFF, 0xFF}, 0, MDBLongInt, 4, "-19"},
 		{"Text", []byte{0x48, 0x65, 0x6C, 0x6C, 0x6F}, 0, MDBText, 5, "Hello"},
 	}
 	for _, tt := range tests {
@@ -393,6 +395,25 @@ func TestIsNullBit(t *testing.T) {
 		if got := IsNullBit(tt.nullMask, tt.colNum); got != tt.want {
 			t.Errorf("IsNullBit(%v, %d) = %v, want %v", tt.nullMask, tt.colNum, got, tt.want)
 		}
+	}
+}
+
+func TestFindRowPreservesRowFlags(t *testing.T) {
+	mdb := &MdbHandle{
+		Fmt: GetFormatConstants(MDBVerJet4),
+	}
+	rowStart := 100
+	PutInt16(mdb.PgBuf[:], int(mdb.Fmt.RowCountOffset)+2, rowStart|0x4000)
+
+	gotStart, gotLength, err := mdb.FindRow(0)
+	if err != nil {
+		t.Fatalf("FindRow failed: %v", err)
+	}
+	if gotStart != rowStart|0x4000 {
+		t.Fatalf("FindRow start=%#x, want deleted flag preserved in %#x", gotStart, rowStart|0x4000)
+	}
+	if want := mdb.Fmt.PgSize - rowStart; gotLength != want {
+		t.Fatalf("FindRow length=%d, want %d", gotLength, want)
 	}
 }
 

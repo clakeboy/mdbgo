@@ -295,7 +295,12 @@ func (db *DB) QueryContext(ctx context.Context, sqlText string, params map[strin
 	if err != nil {
 		return nil, err
 	}
-	return db.queryStatement(ctx, stmt, params)
+	session, release, err := db.acquireQuerySession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return session.queryStatement(ctx, stmt, params)
 }
 
 func (db *DB) queryStatement(ctx context.Context, stmt *sqlSelect, params map[string]any) (*Rows, error) {
@@ -332,7 +337,12 @@ func (db *DB) QueryViewContext(ctx context.Context, viewName string, params map[
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	sqlText, err := db.puregoDB.ViewSQL(viewName)
+	session, release, err := db.acquireQuerySession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	sqlText, err := session.puregoDB.ViewSQL(viewName)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +350,7 @@ func (db *DB) QueryViewContext(ctx context.Context, viewName string, params map[
 	if err != nil {
 		return nil, err
 	}
-	return db.queryStatement(ctx, stmt, params)
+	return session.queryStatement(ctx, stmt, params)
 }
 
 func normalizeParams(params map[string]any) (map[string]Value, error) {

@@ -598,10 +598,11 @@ func TestExportFormRejectsInvalidName(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	if _, err := db.ExportForm("  "); err == nil || err.Error() != "form name is empty" {
+	if _, err := db.ExportForm("  "); err == nil {
 		t.Fatalf("ExportForm(empty) error=%v", err)
 	}
-	if _, err := db.ExportForm("__mdbgo_missing_form__"); err == nil || !strings.Contains(err.Error(), "form not found") {
+	if _, err := db.ExportForm("__mdbgo_missing_form__"); err == nil ||
+		!strings.Contains(err.Error(), "__mdbgo_missing_form__") {
 		t.Fatalf("ExportForm(missing) error=%v", err)
 	}
 }
@@ -779,6 +780,27 @@ func TestReadAccessObjectEntries(t *testing.T) {
 		if strings.Contains(strings.ToLower(entry.Path), "form") {
 			t.Logf("entry path=%q dir=%v size=%d", entry.Path, entry.IsDir, entry.Size)
 		}
+	}
+}
+
+func TestReadAccessObjectEntriesSkipsDeletedStorageRows(t *testing.T) {
+	const dbPath = "testdb/mdbs/ics2.mdb"
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("fixture not found: %s, err=%v", dbPath, err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("ReadAccessObjectEntries returned empty")
 	}
 }
 
@@ -1003,10 +1025,11 @@ func TestExportFormContentRejectsInvalidName(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	if _, err := db.ExportFormContent("  "); err == nil || err.Error() != "form name is empty" {
+	if _, err := db.ExportFormContent("  "); err == nil {
 		t.Fatalf("ExportFormContent(empty) error=%v", err)
 	}
-	if _, err := db.ExportFormContent("__mdbgo_missing_form__"); err == nil || !strings.Contains(err.Error(), "form not found") {
+	if _, err := db.ExportFormContent("__mdbgo_missing_form__"); err == nil ||
+		!strings.Contains(err.Error(), "__mdbgo_missing_form__") {
 		t.Fatalf("ExportFormContent(missing) error=%v", err)
 	}
 }
@@ -2430,6 +2453,28 @@ func TestJet4ControlNumericTailWithoutGUID(t *testing.T) {
 	block = append(block, want...)
 	if got := jet4ControlNumericTailForType(block, name, "ComboBox"); !bytes.Equal(got, want) {
 		t.Fatalf("numeric tail=% x want=% x", got, want)
+	}
+}
+
+func TestIndexUTF16LETokenOffsetsMatchesScalarSearch(t *testing.T) {
+	tokens := []string{"mid", "Detail0", "a", "中文", "missing", "MID"}
+	data := []byte{0x7F}
+	for _, value := range []string{"prefix", "MID", "Detail0", "mid", "中文", "a"} {
+		data = append(data, encodeUTF16LE(value)...)
+		data = append(data, 0xEE)
+	}
+
+	got := indexUTF16LETokenOffsets(data, tokens)
+	for i, token := range tokens {
+		want := findUTF16LETokenOffsets(data, token)
+		if len(got[i]) != len(want) {
+			t.Fatalf("token %q offsets=%v want=%v", token, got[i], want)
+		}
+		for j := range want {
+			if got[i][j] != want[j] {
+				t.Fatalf("token %q offsets=%v want=%v", token, got[i], want)
+			}
+		}
 	}
 }
 

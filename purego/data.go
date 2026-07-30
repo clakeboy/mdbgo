@@ -73,15 +73,16 @@ func (mdb *MdbHandle) FindRow(row int) (int, int, error) {
 	if row > 1000 {
 		return 0, 0, fmt.Errorf("row > 1000")
 	}
-	start := GetInt16(mdb.PgBuf[:], rco+2+row*2) & OffsetMask
+	start := GetInt16(mdb.PgBuf[:], rco+2+row*2)
 	var nextStart int
 	if row == 0 {
 		nextStart = mdb.Fmt.PgSize
 	} else {
 		nextStart = GetInt16(mdb.PgBuf[:], rco+row*2) & OffsetMask
 	}
-	length := nextStart - start
-	if start >= mdb.Fmt.PgSize || start > nextStart || nextStart > mdb.Fmt.PgSize {
+	maskedStart := start & OffsetMask
+	length := nextStart - maskedStart
+	if maskedStart >= mdb.Fmt.PgSize || maskedStart > nextStart || nextStart > mdb.Fmt.PgSize {
 		return 0, 0, fmt.Errorf("invalid row position")
 	}
 	return start, length, nil
@@ -436,7 +437,7 @@ func ColToString(mdb *MdbHandle, buf []byte, start int, dataType int, size int) 
 	case MDBInt:
 		return fmt.Sprintf("%d", int16(GetInt16(buf, start)))
 	case MDBLongInt, MDBComplex:
-		return fmt.Sprintf("%d", GetInt32(buf, start))
+		return fmt.Sprintf("%d", int32(GetInt32(buf, start)))
 	case MDBFloat:
 		return fmt.Sprintf("%.8g", GetSingle(buf, start))
 	case MDBDouble:

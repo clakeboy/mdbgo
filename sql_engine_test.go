@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseAccessSQLFeatures(t *testing.T) {
@@ -119,9 +121,9 @@ func TestQueryContextCancellation(t *testing.T) {
 
 func TestConcurrentQueriesSameDB(t *testing.T) {
 	dbPath := requireDBFile(t)
-	db, err := Open(dbPath)
+	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 4})
 	if err != nil {
-		t.Fatalf("Open failed: %v", err)
+		t.Fatalf("OpenWithOptions failed: %v", err)
 	}
 	defer db.Close()
 
@@ -152,6 +154,96 @@ func TestConcurrentQueriesSameDB(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestConcurrentQueriesUseIndependentHandles(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 4})
+	if err != nil {
+		t.Fatalf("OpenWithOptions failed: %v", err)
+	}
+	defer db.Close()
+
+	first, releaseFirst, err := db.acquireQuerySession(context.Background())
+	if err != nil {
+		t.Fatalf("acquire first query session: %v", err)
+	}
+	defer releaseFirst()
+	second, releaseSecond, err := db.acquireQuerySession(context.Background())
+	if err != nil {
+		t.Fatalf("acquire second query session: %v", err)
+	}
+	defer releaseSecond()
+	if first.handle == second.handle || first.puregoDB == second.puregoDB {
+		t.Fatal("concurrent query sessions unexpectedly share one purego handle")
+	}
+}
+
+func TestConcurrentQueryPoolHonorsContext(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 1})
+	if err != nil {
+		t.Fatalf("OpenWithOptions failed: %v", err)
+	}
+	defer db.Close()
+
+	_, release, err := db.acquireQuerySession(context.Background())
+	if err != nil {
+		t.Fatalf("occupy query session: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = db.QueryContext(ctx, "SELECT TOP 1 * FROM [t_abi_hbl]", nil)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("waiting query error=%v, want context deadline exceeded", err)
+	}
+}
+
+func TestCloseWaitsForActiveQueryHandle(t *testing.T) {
+	dbPath := requireDBFile(t)
+	db, err := OpenWithOptions(dbPath, OpenOptions{MaxConcurrentQueries: 1})
+	if err != nil {
+		t.Fatalf("OpenWithOptions failed: %v", err)
+	}
+	_, release, err := db.acquireQuerySession(context.Background())
+	if err != nil {
+		t.Fatalf("acquire query session: %v", err)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- db.Close()
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		db.stateMu.Lock()
+		closed := db.closed
+		db.stateMu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("Close did not mark DB closed")
+		}
+		runtime.Gosched()
+	}
+	select {
+	case err := <-closeDone:
+		release()
+		t.Fatalf("Close returned before active query handle was released: %v", err)
+	default:
+	}
+
+	release()
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if _, err := db.QueryContext(context.Background(), "SELECT TOP 1 * FROM [t_abi_hbl]", nil); err == nil {
+		t.Fatal("query after Close unexpectedly succeeded")
 	}
 }
 

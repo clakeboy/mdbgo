@@ -272,6 +272,7 @@ func (mdb *MDB) buildFromClause(rows []viewRow) (string, error) {
 
 	var tables []tableSource
 	var joins []viewRow
+	joinIndexes := make(map[string]int)
 	// sourceTableNames 将查询中实际引用的名称映射回物理表名。
 	// 有别名时，后续 JOIN 必须用别名生成 SQL，却要用物理表读取字段结构。
 	sourceTableNames := make(map[string]string)
@@ -296,6 +297,14 @@ func (mdb *MDB) buildFromClause(rows []viewRow) (string, error) {
 			tables = append(tables, t)
 		}
 		if r.Attribute == 7 {
+			// Access 会把复合 JOIN 的每个字段条件存成独立记录。先按左右源和
+			// JOIN 类型合并，否则第二个条件会在两张表已合并后被误判为循环。
+			key := strings.ToLower(r.Name1) + "\x00" + strings.ToLower(r.Name2) + "\x00" + strconv.Itoa(r.Flag)
+			if index, ok := joinIndexes[key]; ok {
+				joins[index].Expression = mergeJoinExpressions(joins[index].Expression, r.Expression)
+				continue
+			}
+			joinIndexes[key] = len(joins)
 			joins = append(joins, r)
 		}
 	}
@@ -366,6 +375,18 @@ func (mdb *MDB) buildFromClause(rows []viewRow) (string, error) {
 		parts[i] = t.sql
 	}
 	return strings.Join(parts, ", "), nil
+}
+
+func mergeJoinExpressions(left string, right string) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" {
+		return right
+	}
+	if right == "" || strings.EqualFold(left, right) {
+		return left
+	}
+	return "(" + left + ") AND (" + right + ")"
 }
 
 // inferJoinCondition 为缺少 Expression 的 Jet JOIN 行推导关系字段。
