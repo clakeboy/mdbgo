@@ -522,12 +522,16 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 	if firstControlOffset > 0 && firstControlOffset <= len(data) {
 		prefix := data[:firstControlOffset]
 		prefixFields := scanJet4TaggedTextFields(prefix)
-		for _, field := range prefixFields {
+		// recordSourceFieldIndex 记录已验证 RecordSource 的物理顺序，后续只在它之后
+		// 查找 Caption，避免窗体头部的 GUID 或数值字节偶然组成 0xDD 文本标签。
+		recordSourceFieldIndex := -1
+		for index, field := range prefixFields {
 			if field.Tag != 0xDC {
 				continue
 			}
 			if source, ok := normalizeTaggedRecordSource(field.Value); ok {
 				formProps = append(formProps, newTextFormProperty(0x009C, source))
+				recordSourceFieldIndex = index
 				break
 			}
 		}
@@ -548,7 +552,13 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 				}
 			}
 		}
-		for _, field := range prefixFields {
+		// captionFields 默认保留无 RecordSource 窗体的旧兼容行为；一旦找到有效
+		// RecordSource，则 Caption 必须来自其后的标签序列。
+		captionFields := prefixFields
+		if recordSourceFieldIndex >= 0 {
+			captionFields = prefixFields[recordSourceFieldIndex+1:]
+		}
+		for _, field := range captionFields {
 			if field.Tag == 0xDD && strings.TrimSpace(field.Value) != "" {
 				formProps = mergeFormProperties(formProps, []FormProperty{newTextFormProperty(0x0011, field.Value)})
 				break

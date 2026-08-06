@@ -456,3 +456,21 @@ func TestAttemptBindTracksActualLength(t *testing.T) {
 		t.Fatalf("NULL binding length=%d prefix=%x", length, buf[:2])
 	}
 }
+
+// TestAttemptBindBooleanValue 验证 Access Boolean 位图能转换为 0/1，且 False 不会被标记为 NULL。
+func TestAttemptBindBooleanValue(t *testing.T) {
+	mdb := &MdbHandle{BooleanFalse: "0", BooleanTrue: "1"}
+	buf := make([]byte, 4)
+	length := 0
+	col := &MdbColumn{ColType: MDBBool, BindPtr: buf, LenPtr: &length}
+
+	AttemptBind(mdb, nil, col, false, 0, 0)
+	if got := string(buf[:length]); got != "1" || col.IsNull {
+		t.Fatalf("Boolean True binding=%q null=%v, want 1/false", got, col.IsNull)
+	}
+
+	AttemptBind(mdb, nil, col, true, 0, 0)
+	if got := string(buf[:length]); got != "0" || col.IsNull {
+		t.Fatalf("Boolean False binding=%q null=%v, want 0/false", got, col.IsNull)
+	}
+}

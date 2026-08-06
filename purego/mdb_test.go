@@ -24,6 +24,9 @@ func TestOpenMDB(t *testing.T) {
 	if mdb.GetHandle() == nil {
 		t.Fatal("GetHandle() returned nil")
 	}
+	if mdb.GetHandle().BooleanFalse != "0" || mdb.GetHandle().BooleanTrue != "1" {
+		t.Fatalf("boolean format=%q/%q, want 0/1", mdb.GetHandle().BooleanFalse, mdb.GetHandle().BooleanTrue)
+	}
 }
 
 func TestFileFormat(t *testing.T) {

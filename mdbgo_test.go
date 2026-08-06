@@ -2444,6 +2444,36 @@ func TestParseJet4FormDefaultView(t *testing.T) {
 	}
 }
 
+// TestParseJet4FormTextPropertiesSkipsBinaryCaption 验证窗体头部的二进制数据
+// 即使偶然组成可打印的 0xDD 文本，也不会覆盖 RecordSource 后的真实 Caption。
+func TestParseJet4FormTextPropertiesSkipsBinaryCaption(t *testing.T) {
+	data := []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x06}
+	// falseCaption 模拟 f_oem_query 中被旧扫描器误解为“索歑”的数值字节。
+	falseCaption := []byte{0xDD, 0x04, 0x6A, 0xF9, 0x51, 0x6B}
+	data = append(data, falseCaption...)
+
+	// recordSource 和 caption 使用 Jet4 紧凑标签的真实保存顺序。
+	recordSource := encodeUTF16LE("v_oem_query_general")
+	data = append(data, 0xDC, byte(len(recordSource)))
+	data = append(data, recordSource...)
+	caption := encodeUTF16LE("Query Master")
+	data = append(data, 0xDD, byte(len(caption)))
+	data = append(data, caption...)
+
+	// 控件块用于确定窗体属性前缀的结束位置。
+	controlName := "lbl_value"
+	data = append(data, encodeUTF16LE(controlName)...)
+	controlCaption := encodeUTF16LE("Value")
+	data = append(data, 0xDD, byte(len(controlCaption)))
+	data = append(data, controlCaption...)
+	controls := []FormControlInfo{{Name: controlName, Type: "Label", TypeCode: 0x0C64}}
+
+	formProps, _ := parseJet4FormTextProperties(data, controls)
+	if got := formPropertyText(formProps, 0x0011); got != "Query Master" {
+		t.Fatalf("Caption=%q want=%q", got, "Query Master")
+	}
+}
+
 func TestJet4ControlNumericTailWithoutGUID(t *testing.T) {
 	name := "hs_code"
 	block := append([]byte(nil), encodeUTF16LE(name)...)

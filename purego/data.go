@@ -277,13 +277,15 @@ func AttemptBind(mdb *MdbHandle, table *MdbTableDef, col *MdbColumn, isNull bool
 		clear(bindPtr)
 	}
 	if col.ColType == MDBBool {
-		// bool uses null bit for value
+		// Access 的 Boolean 没有独立数据字节，而是复用行空值位图：位为 1 表示 True，
+		// 位为 0 表示 False。该字段本身并不是 NULL，避免上层扫描把 False 当成空值。
+		col.IsNull = false
 		if bindPtr, ok := col.BindPtr.([]byte); ok && bindPtr != nil {
 			var value string
 			if isNull {
-				value = mdb.BooleanTrue
-			} else {
 				value = mdb.BooleanFalse
+			} else {
+				value = mdb.BooleanTrue
 			}
 			n := copy(bindPtr, value)
 			terminateBoundValue(bindPtr, n)

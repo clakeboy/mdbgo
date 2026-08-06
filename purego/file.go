@@ -268,18 +268,20 @@ func Open(filename string, flags MdbFileFlags) (*MdbHandle, error) {
 
 	mdb := &MdbHandle{
 		F: &MdbFile{
-			Reader:    reader,
-			Writable:  flags&MDBWritable != 0,
-			Refs:      1,
-			FreeMap:   make([]byte, 0),
-			Stats:     &MdbStatistics{},
+			Reader:   reader,
+			Writable: flags&MDBWritable != 0,
+			Refs:     1,
+			FreeMap:  make([]byte, 0),
+			Stats:    &MdbStatistics{},
 		},
-		Fmt:        Jet3FormatConstants, // 先使用 Jet3 格式
-		DateFmt:    "%x %X",
+		Fmt:          Jet3FormatConstants, // 先使用 Jet3 格式
+		DateFmt:      "%x %X",
 		ShortDateFmt: "%x",
-		BindSize:   MDBBindSize,
-		Catalog:    make([]*MdbCatalogEntry, 0),
-		Backends:   make(map[string]*MdbBackend),
+		BindSize:     MDBBindSize,
+		BooleanFalse: "0",
+		BooleanTrue:  "1",
+		Catalog:      make([]*MdbCatalogEntry, 0),
+		Backends:     make(map[string]*MdbBackend),
 	}
 
 	// 读取第 0 页
@@ -360,18 +362,20 @@ func OpenBuffer(buffer []byte, flags MdbFileFlags) (*MdbHandle, error) {
 
 	mdb := &MdbHandle{
 		F: &MdbFile{
-			Reader:    reader,
-			Writable:  flags&MDBWritable != 0,
-			Refs:      1,
-			FreeMap:   make([]byte, 0),
-			Stats:     &MdbStatistics{},
+			Reader:   reader,
+			Writable: flags&MDBWritable != 0,
+			Refs:     1,
+			FreeMap:  make([]byte, 0),
+			Stats:    &MdbStatistics{},
 		},
-		Fmt:        Jet3FormatConstants,
-		DateFmt:    "%x %X",
+		Fmt:          Jet3FormatConstants,
+		DateFmt:      "%x %X",
 		ShortDateFmt: "%x",
-		BindSize:   MDBBindSize,
-		Catalog:    make([]*MdbCatalogEntry, 0),
-		Backends:   make(map[string]*MdbBackend),
+		BindSize:     MDBBindSize,
+		BooleanFalse: "0",
+		BooleanTrue:  "1",
+		Catalog:      make([]*MdbCatalogEntry, 0),
+		Backends:     make(map[string]*MdbBackend),
 	}
 
 	// 读取第 0 页
