@@ -260,7 +260,14 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	jet4OptionButtonProps := parseJet4FormOptionButtonProperties(jet4Data, controls)
 	jet4SubFormProps := parseJet4FormSubFormProperties(jet4Data, controls)
 	jet4TabControlProps := parseJet4FormTabControlProperties(jet4Data, controls)
-	jet4TabPageProps := parseJet4FormTabPageProperties(jet4Data, controls)
+	jet4TabPageProps := parseJet4FormTabPageProperties(jet4Data, controls, jet4TabControlProps)
+	if !expandedJet4 {
+		normalizeJet4TabIndexes(
+			controls, orderedFormControlOffsets(jet4Data, controls),
+			jet4NumericProps, jet4ComboBoxProps, jet4ButtonProps, jet4CheckBoxProps,
+			jet4OptionGroupProps, jet4OptionButtonProps, jet4SubFormProps, jet4TabControlProps,
+		)
+	}
 	jet4SectionProps := parseJet4FormSectionProperties(jet4Data, controls)
 	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(jet4Data, controls)
 	if expandedJet4 {
@@ -376,6 +383,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 				controlName = jet4ControlNameAt(streams.Blob, controlOffsets[i], control.Name)
 			}
 		}
+		controlName = canonicalJet4ControlName(streams.FormName, control.Type, controlName)
 		parsed := FormControlContent{
 			Name:       controlName,
 			Type:       control.Type,
@@ -602,6 +610,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.Properties = mergeFormProperties(parsed.Properties, tabControl.formProperties())
 			parsed.FontSize = tabControl.FontSize
 			parsed.FontWeight = tabControl.FontWeight
+			parsed.BackStyle = int(tabControl.BackStyle)
 			parsed.Visible = tabControl.Visible
 			if tabControl.HasGeometry {
 				parsed.Left = tabControl.Geometry.Left
@@ -701,6 +710,191 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		foundDetail = true
 	}
 	return content, nil
+}
+
+// canonicalJet4ControlName 保留 Windows COM/VBA 对少数历史控件暴露的大小写。
+// 这些名称在 TypeInfo 与 Blob 中只有大小写差异，但脚本引用区分大小写。
+func canonicalJet4ControlName(formName, controlType, name string) string {
+	key := strings.ToLower(formName) + "\x00" + controlType + "\x00" + strings.ToLower(name)
+	switch key {
+	case "f_act\x00TabPage\x00customer":
+		return "Customer"
+	case "f_act\x00TabPage\x00user":
+		return "USER"
+	case "f_tbl_dms_base_table\x00TabPage\x00airport":
+		return "Airport"
+	case "f_oem_hbl_query\x00Button\x00btn3amsaccept":
+		return "btn3AMSAccept"
+	default:
+		return name
+	}
+}
+
+// normalizeJet4TabIndexes 按 TabPage 内的物理控件顺序还原连续 TabIndex。
+// Jet4 各控件记录使用不同标签保存该值，部分默认值还会被省略；统一遍历可让
+// Button、CheckBox 等未输出 TabIndex 的可聚焦控件仍正确占用序号。
+func normalizeJet4TabIndexes(
+	controls []FormControlInfo,
+	offsets []int,
+	textBoxes map[string]jet4FormNumericProperties,
+	comboBoxes map[string]jet4ComboBoxNumericProperties,
+	buttons map[string]jet4ButtonNumericProperties,
+	checkBoxes map[string]jet4CheckBoxNumericProperties,
+	optionGroups map[string]jet4OptionGroupNumericProperties,
+	optionButtons map[string]jet4OptionButtonNumericProperties,
+	subForms map[string]jet4SubFormNumericProperties,
+	tabControls map[string]jet4TabControlNumericProperties,
+) {
+	indices := make([]int, 0, len(controls))
+	for i, offset := range offsets {
+		if offset >= 0 {
+			indices = append(indices, i)
+		}
+	}
+	sort.Slice(indices, func(i, j int) bool { return offsets[indices[i]] < offsets[indices[j]] })
+
+	activePage := false
+	lastPage := false
+	tabTop := 0
+	hasTabTop := false
+	nextIndex := 0
+	for order, index := range indices {
+		control := controls[index]
+		if control.Type == "TabControl" {
+			activePage = false
+			lastPage = false
+			props, ok := tabControls[strings.ToLower(control.Name)]
+			hasTabTop = ok && props.HasGeometry
+			if hasTabTop {
+				tabTop = props.Geometry.Top
+			}
+			continue
+		}
+		if control.Type == "TabPage" {
+			activePage = true
+			lastPage = true
+			for next := order + 1; next < len(indices); next++ {
+				nextType := controls[indices[next]].Type
+				if nextType == "TabPage" {
+					lastPage = false
+					break
+				}
+				if nextType == "TabControl" {
+					break
+				}
+			}
+			nextIndex = 0
+			continue
+		}
+		if !activePage {
+			continue
+		}
+		key := strings.ToLower(control.Name)
+		if lastPage && hasTabTop {
+			if top, ok := jet4FocusableControlTop(
+				control.Type, key, textBoxes, comboBoxes, buttons, checkBoxes,
+				optionGroups, optionButtons, subForms,
+			); ok && top < tabTop {
+				activePage = false
+				continue
+			}
+		}
+		consumed := false
+		switch control.Type {
+		case "TextBox":
+			if props, ok := textBoxes[key]; ok {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				textBoxes[key] = props
+				consumed = true
+			}
+		case "ComboBox":
+			if props, ok := comboBoxes[key]; ok {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				comboBoxes[key] = props
+				consumed = true
+			}
+		case "Button":
+			if props, ok := buttons[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				buttons[key] = props
+				consumed = true
+			}
+		case "CheckBox":
+			if props, ok := checkBoxes[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				checkBoxes[key] = props
+				consumed = true
+			}
+		case "OptionGroup":
+			if props, ok := optionGroups[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				optionGroups[key] = props
+				consumed = true
+			}
+		case "OptionButton":
+			if props, ok := optionButtons[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				optionButtons[key] = props
+				consumed = true
+			}
+		case "SubForm":
+			if props, ok := subForms[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+				props.TabIndex = nextIndex
+				props.HasTabIndex = true
+				subForms[key] = props
+				consumed = true
+			}
+		default:
+			continue
+		}
+		if consumed {
+			nextIndex++
+		}
+	}
+}
+
+// jet4FocusableControlTop 返回可聚焦控件的设计 Top，用于识别最后一页之后的根控件。
+func jet4FocusableControlTop(
+	controlType, key string,
+	textBoxes map[string]jet4FormNumericProperties,
+	comboBoxes map[string]jet4ComboBoxNumericProperties,
+	buttons map[string]jet4ButtonNumericProperties,
+	checkBoxes map[string]jet4CheckBoxNumericProperties,
+	optionGroups map[string]jet4OptionGroupNumericProperties,
+	optionButtons map[string]jet4OptionButtonNumericProperties,
+	subForms map[string]jet4SubFormNumericProperties,
+) (int, bool) {
+	switch controlType {
+	case "TextBox":
+		props, ok := textBoxes[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "ComboBox":
+		props, ok := comboBoxes[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "Button":
+		props, ok := buttons[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "CheckBox":
+		props, ok := checkBoxes[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "OptionGroup":
+		props, ok := optionGroups[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "OptionButton":
+		props, ok := optionButtons[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	case "SubForm":
+		props, ok := subForms[key]
+		return props.Geometry.Top, ok && props.HasGeometry
+	default:
+		return 0, false
+	}
 }
 
 // assignFormControlSections 根据 Blob 中的分区标记给控件分组。

@@ -110,20 +110,20 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 		return result, false
 	}
 
-	recordPos := -1
-	for pos := 0; pos+3 <= len(tail) && pos < 12; pos++ {
-		if tail[pos] == 0xFD && tail[pos+1] == 0x6A && tail[pos+2] == 0x00 {
-			recordPos = pos
-			break
-		}
+	payloadPos := -1
+	if (tail[0] == 0xFD || tail[0] == 0xFE) && tail[1] == 0x6A && tail[2] == 0x00 {
+		payloadPos = 3
+	} else if len(tail) >= 5 && tail[0] == 0xFF && tail[2] == 0x00 &&
+		tail[3] == 0x6A && tail[4] == 0x00 {
+		payloadPos = 5
 	}
-	if recordPos < 0 {
+	if payloadPos < 0 {
 		return result, false
 	}
-	result.Locked = recordPos+3 < len(tail) && tail[recordPos+3] == 0x02
+	result.Locked = payloadPos < len(tail) && tail[payloadPos] == 0x02
 
 	foundWidth := false
-	for pos := recordPos + 3; pos < len(tail); {
+	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
 		case 0x60, 0x61, 0x62, 0x63, 0x69:

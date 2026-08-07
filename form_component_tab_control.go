@@ -22,6 +22,7 @@ func parseJet4TabControlTextProperties(_ FormControlInfo, fields []jet4TaggedTex
 type jet4TabControlNumericProperties struct {
 	FontSize    int
 	FontWeight  int
+	BackStyle   byte
 	Visible     bool
 	Geometry    formControlGeometry
 	HasGeometry bool
@@ -29,6 +30,7 @@ type jet4TabControlNumericProperties struct {
 
 func (props jet4TabControlNumericProperties) formProperties() []FormProperty {
 	return []FormProperty{
+		{ID: 0x001D, Name: FormPropertyIDToName(0x001D), ValueType: "Byte", Value: strconv.Itoa(int(props.BackStyle))},
 		{ID: 0x0023, Name: FormPropertyIDToName(0x0023), ValueType: "Short", Value: strconv.Itoa(props.FontSize)},
 		{ID: 0x0025, Name: FormPropertyIDToName(0x0025), ValueType: "Short", Value: strconv.Itoa(props.FontWeight)},
 		{ID: 0x0094, Name: FormPropertyIDToName(0x0094), ValueType: "Bool", Value: strconv.FormatBool(props.Visible)},
@@ -120,10 +122,18 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 
 	foundWidth := false
 	foundHeight := false
+	layoutMask := byte(0)
+	styleCode := -1
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
-		case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65:
+		case 0x31:
+			if pos+2 > len(tail) {
+				return result, false
+			}
+			layoutMask = tail[pos+1]
+			pos += 2
+		case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66:
 			if pos+3 > len(tail) {
 				return result, false
 			}
@@ -143,6 +153,8 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 				result.FontSize = value
 			case 0x65:
 				result.FontWeight = value
+			case 0x66:
+				styleCode = value
 			}
 			pos += 3
 		case 0xDC:
@@ -150,6 +162,11 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 		default:
 			pos++
 		}
+	}
+	// 实体背景样式只在已观察到的 0x57/0x0002 组合中出现；
+	// 单独的 0x31 掩码还被多种透明 TabControl 共用。
+	if layoutMask == 0x57 && styleCode == 2 {
+		result.BackStyle = 1
 	}
 	if !foundWidth || !foundHeight ||
 		result.FontSize <= 0 || result.FontSize > 255 || result.FontWeight < 0 || result.FontWeight > 1000 ||

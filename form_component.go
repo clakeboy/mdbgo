@@ -765,6 +765,18 @@ func parseJet4FormDefaultView(data []byte) (int, bool) {
 	}
 	switch data[10] {
 	case 0x06:
+		// 少数连续窗体沿用 0x06 模板类型，并以紧随其后的 0x31=0x04
+		// 保存连续窗体变体；普通单窗体的 0x31 值为 0x01 或不出现。
+		for pos := 11; pos+1 < len(data) && pos < 32; {
+			if data[pos] >= 0x30 && data[pos] <= 0x5F {
+				if data[pos] == 0x31 && data[pos+1] == 0x04 {
+					return 1, true
+				}
+				pos += 2
+				continue
+			}
+			pos++
+		}
 		return 0, true
 	case 0x0F:
 		return 1, true
@@ -1191,20 +1203,12 @@ func normalizeTaggedRecordSource(value string) (string, bool) {
 	if value == "" || isKnownFormFont(value) {
 		return "", false
 	}
-	hasLetterOrDigit := false
-	for _, r := range value {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasLetterOrDigit = true
-			continue
-		}
-		switch r {
-		case '_', '.', '!', '[', ']', '-', ' ':
-			continue
-		default:
-			return "", false
-		}
+	// 无 SELECT/[name] 外壳的紧凑 RecordSource 只接受完整 ASCII 标识符。
+	// 二进制 GUID 偶尔可解码成单个可打印 CJK 字符，不能把它当成表名。
+	if source, ok := normalizeASCIIFormIdentifier(value); ok && source == value {
+		return source, true
 	}
-	return value, hasLetterOrDigit
+	return "", false
 }
 
 func normalizeControlSource(value, controlName string) (string, bool) {
@@ -1218,7 +1222,15 @@ func normalizeControlSource(value, controlName string) (string, bool) {
 
 	// 英文标识符后若紧跟布局二进制被误解码出的 Unicode 字符，只保留合法 ASCII 前缀。
 	if value[0] < utf8.RuneSelf {
-		return normalizeASCIIFormIdentifier(value)
+		source, ok := normalizeASCIIFormIdentifier(value)
+		if !ok {
+			return "", false
+		}
+		if dot := strings.LastIndexByte(source, '.'); dot >= 0 &&
+			strings.EqualFold(source[dot+1:], controlName) {
+			return source[dot+1:], true
+		}
+		return source, true
 	}
 
 	for _, r := range value {

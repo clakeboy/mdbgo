@@ -35,7 +35,11 @@ func (props jet4TabPageNumericProperties) formProperties() []FormProperty {
 
 // parseJet4FormTabPageProperties 按物理顺序把 0x7C Page 数值记录配回 TabPage。
 // 第一页的记录通常位于 TabControl 块尾部，其余页可能位于前一页最后一个控件的块尾部。
-func parseJet4FormTabPageProperties(data []byte, controls []FormControlInfo) map[string]jet4TabPageNumericProperties {
+func parseJet4FormTabPageProperties(
+	data []byte,
+	controls []FormControlInfo,
+	tabControls map[string]jet4TabControlNumericProperties,
+) map[string]jet4TabPageNumericProperties {
 	result := make(map[string]jet4TabPageNumericProperties)
 	if len(data) < 8 || len(controls) == 0 || le16(data) > 0x0014 {
 		return result
@@ -78,31 +82,70 @@ func parseJet4FormTabPageProperties(data []byte, controls []FormControlInfo) map
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
 
 	numericRecords := make([]jet4TabPageNumericProperties, 0, len(tabPages))
-	legacyFrame := false
+	legacyFallback := false
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		if mask, ok := jet4TabPageBoundaryMask(tail); ok {
-			legacyFrame = jet4TabPageUsesLegacyFrame(mask)
+		if marker, ok := jet4TabPageBoundaryMask(tail); ok {
+			// 没有可用 TabControl 几何时保留旧格式的边界判定。
+			legacyFallback = marker&0x01 == 0
 		}
 		props, ok := parseJet4TabPageNumericTail(tail)
 		if ok {
-			// 一个 TabControl 只有第一页带 FF 边界掩码，后续 Page 使用 FD/FE
-			// 记录并继承第一页的边框尺寸。掩码 02 的外框上下各多 15 twips。
-			if legacyFrame {
-				if _, explicit := jet4TabPageBoundaryMask(tail); !explicit {
-					props.Geometry.Top -= 15
-					props.Geometry.Height += 15
-				}
+			hasTabTop := false
+			if len(numericRecords) < len(tabPages) {
+				_, hasTabTop = jet4TabControlTopBeforePage(
+					tabPages[len(numericRecords)].offset, controls, offsets, tabControls,
+				)
+			}
+			if !hasTabTop && legacyFallback {
+				props.Geometry.Top -= 15
+				props.Geometry.Height += 15
 			}
 			numericRecords = append(numericRecords, props)
 		}
 	}
 	for i := 0; i < len(tabPages) && i < len(numericRecords); i++ {
 		props := numericRecords[i]
+		if tabTop, ok := jet4TabControlTopBeforePage(
+			tabPages[i].offset, controls, offsets, tabControls,
+		); ok {
+			// 数值记录的内框 Top 与 TabControl.Top 相差 405 时，Windows
+			// 使用 45/83 twips 外框；相差 420 时使用 30/68 twips 外框。
+			internalTop := props.Geometry.Top + 30
+			if internalTop-tabTop == 405 {
+				props.Geometry.Top -= 15
+				props.Geometry.Height += 15
+			}
+		}
 		props.PageIndex = i
 		result[strings.ToLower(tabPages[i].name)] = props
 	}
 	return result
+}
+
+// jet4TabControlTopBeforePage 返回当前 Page 所属的最近前置 TabControl.Top。
+func jet4TabControlTopBeforePage(
+	pageOffset int,
+	controls []FormControlInfo,
+	offsets []int,
+	tabControls map[string]jet4TabControlNumericProperties,
+) (int, bool) {
+	bestOffset := -1
+	top := 0
+	found := false
+	for i, offset := range offsets {
+		if offset < 0 || offset >= pageOffset || offset <= bestOffset || controls[i].Type != "TabControl" {
+			continue
+		}
+		props, ok := tabControls[strings.ToLower(controls[i].Name)]
+		if !ok || !props.HasGeometry {
+			continue
+		}
+		bestOffset = offset
+		top = props.Geometry.Top
+		found = true
+	}
+	return top, found
 }
 
 func jet4TabPageBoundaryMask(tail []byte) (byte, bool) {
@@ -110,12 +153,6 @@ func jet4TabPageBoundaryMask(tail []byte) (byte, bool) {
 		return 0, false
 	}
 	return tail[1], true
-}
-
-func jet4TabPageUsesLegacyFrame(mask byte) bool {
-	// 已观察到 02/06 使用旧版 45/83 twips 外框，03 使用新版 30/68。
-	// 最低位是这两种布局之间稳定的区别，其余位保存其他 Page 标志。
-	return mask&0x01 == 0
 }
 
 func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, bool) {
@@ -183,14 +220,11 @@ func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, boo
 		return result, false
 	}
 
-	// Access COM 的 Page.Left/Top/Width/Height 是包含页边框的外框；Jet4 记录保存内框。
-	// FF 掩码 02 的旧版布局比掩码 03 的顶部边框多 15 twips。
+	// Access COM 的 Page.Left/Top/Width/Height 是包含页边框的外框；
+	// 单条记录先按 30/68 twips 基础外框换算，调用方再结合 TabControl.Top
+	// 判断是否需要额外扩展 15 twips。
 	topExpansion := 30
 	heightExpansion := 68
-	if len(tail) > 1 && tail[0] == 0xFF && jet4TabPageUsesLegacyFrame(tail[1]) {
-		topExpansion = 45
-		heightExpansion = 83
-	}
 	result.Geometry = formControlGeometry{
 		Left:   internal.Left - 37,
 		Top:    internal.Top - topExpansion,

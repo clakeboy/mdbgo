@@ -178,6 +178,7 @@ func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties) {
 	}
 }
 
+// hasJet4ControlTypeBetween 判断两个物理偏移之间是否存在指定类型控件。
 func hasJet4ControlTypeBetween(controls []FormControlInfo, offsets []int, start, end int, controlType string) bool {
 	for i, offset := range offsets {
 		if offset > start && offset < end && controls[i].Type == controlType {
@@ -187,6 +188,7 @@ func hasJet4ControlTypeBetween(controls []FormControlInfo, offsets []int, start,
 	return false
 }
 
+// hasJet4FocusableControlBetween 判断两个物理偏移之间是否存在可聚焦控件。
 func hasJet4FocusableControlBetween(controls []FormControlInfo, offsets []int, start, end int) bool {
 	for i, offset := range offsets {
 		if offset <= start || offset >= end {

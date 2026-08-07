@@ -817,6 +817,73 @@ func TestExportFormAsAccessJSON(t *testing.T) {
 	t.Logf("form=%q JSON written to %s (%d bytes)", formName, outputPath, len(data))
 }
 
+// TestExportAllFormsAsAccessJSON 导出指定 MDB 的全部窗体到指定目录，
+// 每个窗体输出一个 <窗体名>.json，内容格式与 TestExportFormAsAccessJSON 一致。
+//
+// 示例：
+//
+//	MDBGO_TEST_DB=testdb/mdbs/dms.mdb MDBGO_EXPORT_FORMS_DIR=/tmp/forms_out \
+//	  go test -run TestExportAllFormsAsAccessJSON -v -count=1
+func TestExportAllFormsAsAccessJSON(t *testing.T) {
+	outputDir := strings.TrimSpace(os.Getenv("MDBGO_EXPORT_FORMS_DIR"))
+	if outputDir == "" {
+		t.Skip("set MDBGO_EXPORT_FORMS_DIR to export all Access forms")
+	}
+	db, err := Open(requireDBFile(t))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+	}
+	formIDs, err := formStorageIDsFromEntries(entries)
+	if err != nil {
+		t.Fatalf("formStorageIDsFromEntries failed: %v", err)
+	}
+	formNames := make([]string, 0, len(formIDs))
+	for name := range formIDs {
+		formNames = append(formNames, name)
+	}
+	sort.Strings(formNames)
+	if len(formNames) == 0 {
+		t.Skip("database contains no forms")
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output dir %s failed: %v", outputDir, err)
+	}
+
+	builder := newAccessRawJSONBuilder(entries)
+	exported, failed := 0, 0
+	for _, name := range formNames {
+		form, err := builder.buildForm(name)
+		if err != nil {
+			t.Errorf("build Access JSON for %q failed: %v", name, err)
+			failed++
+			continue
+		}
+		data, err := marshalAccessRawJSONIndent(form)
+		if err != nil {
+			t.Errorf("marshal Access JSON for %q failed: %v", name, err)
+			failed++
+			continue
+		}
+		data = append(data, '\n')
+		outputPath := filepath.Join(outputDir, name+".json")
+		if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+			t.Errorf("write Access JSON %s failed: %v", outputPath, err)
+			failed++
+			continue
+		}
+		exported++
+	}
+	t.Logf("exported %d forms to %s (%d failed)", exported, outputDir, failed)
+	if failed > 0 {
+		t.Fail()
+	}
+}
+
 func TestBuildAccessJSONFOemHbl(t *testing.T) {
 	testBuildAccessJSONAgainstRawFixtureAtDB(t,
 		filepath.Join("testdb", "mdbs", "mpci_2003.mdb"),
@@ -867,6 +934,56 @@ func TestBuildAccessJSONFAbiEntry(t *testing.T) {
 func TestBuildAccessJSONFOem(t *testing.T) {
 	testBuildAccessJSONPropertiesAgainstRawFixture(t,
 		"f_oem", filepath.Join("testdb", "f_oem_org.json"))
+}
+
+// TestBuildAccessJSONDMSWindowsParity 验证 dms-0805.mdb 的全部窗体与
+// Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONDMSWindowsParity(t *testing.T) {
+	dbPath := filepath.Join("testdb", "mdbs", "dms-0805.mdb")
+	fixturePattern := filepath.Join("testdb", "dms", "export", "*_org.json")
+	fixturePaths, err := filepath.Glob(fixturePattern)
+	if err != nil {
+		t.Fatalf("glob Windows fixtures failed: %v", err)
+	}
+	if len(fixturePaths) == 0 {
+		t.Skipf("skip integration test, no fixtures matched %s", fixturePattern)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("skip integration test, db file not found: %s, err=%v", dbPath, err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+	}
+	builder := newAccessRawJSONBuilder(entries)
+	sort.Strings(fixturePaths)
+	for _, fixturePath := range fixturePaths {
+		baseName := filepath.Base(fixturePath)
+		formName := strings.TrimSuffix(baseName, "_org.json")
+		t.Run(formName, func(t *testing.T) {
+			exported, err := builder.buildForm(formName)
+			if err != nil {
+				t.Fatalf("build Access JSON failed: %v", err)
+			}
+			rawFixture, err := os.ReadFile(fixturePath)
+			if err != nil {
+				t.Fatalf("read Windows fixture failed: %v", err)
+			}
+			var expected accessRawJSONForm
+			if err := json.Unmarshal(rawFixture, &expected); err != nil {
+				t.Fatalf("decode Windows fixture failed: %v", err)
+			}
+			if !reflect.DeepEqual(*exported, expected) {
+				t.Fatal("mdbgo form differs from Windows Access export")
+			}
+		})
+	}
 }
 
 func TestBuildAccessJSONFCVMRectanglesAgainstRawFixture(t *testing.T) {

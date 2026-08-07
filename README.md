@@ -185,6 +185,16 @@ go test -run TestExportFormAsAccessJSON -v -count=1
 
 可同时使用 `MDBGO_TEST_DB=/path/to/database.mdb` 指定其它 MDB 文件。未设置 `MDBGO_EXPORT_FORM_OUTPUT` 时 JSON 输出到测试日志。Windows COM `GetHashCode()` 是运行时值，并不存在于 MDB 持久数据中，因此该测试不会输出 `Hash`。
 
+`TestExportAllFormsAsAccessJSON` 批量导出指定 MDB 的全部窗体到目录，每个窗体输出一个 `<窗体名>.json` 文件，文件内容格式与 `TestExportFormAsAccessJSON` 一致：
+
+```bash
+MDBGO_TEST_DB=testdb/mdbs/dms-0805.mdb \
+MDBGO_EXPORT_FORMS_DIR=testdb/dms/mdbgo \
+go test -run TestExportAllFormsAsAccessJSON -v -count=1
+```
+
+使用方式：通过 `MDBGO_TEST_DB=/path/to/database.mdb` 指定要导出的 MDB 文件（缺省为 `testdb/mdbs/ABIQuery.mdb`），通过 `MDBGO_EXPORT_FORMS_DIR=/path/to/output_dir` 指定输出目录（目录不存在时自动创建）。单个窗体导出失败不会中断整体，其余窗体继续导出，测试结束时会统计成功与失败数量。
+
 ## 说明
 
 - 当前 `DB` 句柄的元数据操作（`Tables`/`Views`/`Schema`/`ReadTable`/Form 读取接口）按串行访问设计，不应与彼此或 `Close` 并发调用。

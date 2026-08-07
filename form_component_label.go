@@ -211,14 +211,14 @@ func parseJet4LabelNumericTailWithDefaults(
 		return result, false
 	}
 
-	// Label 的紧凑记录类型为 0x0064。ForeColor 前可能插入
-	// 0x9D BorderColor，因此不能依赖 0x9C/0x9E 必须相邻。
+	// Label 的紧凑记录类型为 0x0064。FF 的第二字节是边界长度，
+	// 不能把恰好等于 0x64 的长度误认成记录类型。
 	recordPos := -1
-	for pos := 0; pos+2 <= len(tail) && pos < 8; pos++ {
-		if tail[pos] == 0x64 && tail[pos+1] == 0x00 {
-			recordPos = pos + 2
-			break
-		}
+	if (tail[0] == 0xFD || tail[0] == 0xFE) && tail[1] == 0x64 && tail[2] == 0x00 {
+		recordPos = 3
+	} else if len(tail) >= 5 && tail[0] == 0xFF && tail[2] == 0x00 &&
+		tail[3] == 0x64 && tail[4] == 0x00 {
+		recordPos = 5
 	}
 	if recordPos < 0 {
 		return result, false
@@ -306,6 +306,14 @@ func parseJet4LabelNumericTailWithDefaults(
 	}
 	result.hasBackColor = foundBackColor
 	result.hasForeColor = foundForeColor
+	// 灰底列表标题的 0x9D 保存边框色 0x333333，而不是文字色；
+	// Access 对这套模板使用白色文字，且不会再写 0x9E。
+	if foundBackColor && result.BackColorValue == 0x00808080 &&
+		result.ForeColorValue == 0x00333333 {
+		result.ForeColorValue = 0x00FFFFFF
+		result.ForeColor = accessColorHex(result.ForeColorValue)
+		result.hasForeColor = false
+	}
 	if result.Geometry.Width <= 0 || result.Geometry.Height <= 0 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width > 32767 || result.Geometry.Height > 32767 {

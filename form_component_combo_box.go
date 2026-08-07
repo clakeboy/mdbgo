@@ -213,13 +213,26 @@ func parseJet4ComboBoxNumericTailWithDefaultWidth(
 		return result, false
 	}
 	payloadPos := typePos + 2
-	for pos := payloadPos; pos < len(tail) && tail[pos] != 0x60; pos++ {
-		if tail[pos] == 0x04 {
-			result.Locked = true
+	layoutPos := len(tail)
+	for pos := payloadPos; pos+2 < len(tail); pos++ {
+		if tail[pos] >= 0x60 && tail[pos] <= 0x66 || tail[pos] == 0x6E {
+			layoutPos = pos
+			break
 		}
-		if tail[pos] == 0x39 && pos+1 < len(tail) && tail[pos+1] <= 4 {
-			result.TextAlign = tail[pos+1]
+	}
+	// Locked 是记录前缀开头的独立 0x04 标志。不能扫描整个前缀，
+	// 否则布局标签的值字节等于 0x04 时也会被误判为只读。
+	result.Locked = payloadPos < layoutPos && tail[payloadPos] == 0x04
+	for pos := payloadPos; pos < layoutPos; {
+		if tail[pos] < 0x30 || pos+1 >= layoutPos {
+			pos++
+			continue
 		}
+		tag, value := tail[pos], tail[pos+1]
+		if tag == 0x39 && value <= 4 {
+			result.TextAlign = value
+		}
+		pos += 2
 	}
 
 	foundWidth := defaultWidth > 0

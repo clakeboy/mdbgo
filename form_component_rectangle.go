@@ -163,7 +163,6 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 	}
 	result := jet4RectangleNumericProperties{
 		BorderStyle:    1,
-		BorderWidth:    1,
 		Visible:        true,
 		BackColor:      accessColorHex(0x00FFFFFF),
 		BackColorValue: 0x00FFFFFF,

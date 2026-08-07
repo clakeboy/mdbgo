@@ -1374,6 +1374,13 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		t.Fatalf("ComboBox numeric properties=%+v", got)
 	}
 
+	layoutByteFourTail := append([]byte(nil), tail...)
+	copy(layoutByteFourTail[22:25], []byte{0x64, 0x04, 0x00})
+	got, ok = parseJet4ComboBoxNumericTail(layoutByteFourTail)
+	if !ok || got.Locked {
+		t.Fatalf("布局值含 0x04 的 ComboBox Locked=%v ok=%v", got.Locked, ok)
+	}
+
 	omittedTopTail := []byte{
 		0xFD, 0x6F, 0x00, 0x04, 0x0A, 0x32, 0x00, 0x39, 0x02,
 		0x60, 0x02, 0x00,
@@ -1712,6 +1719,16 @@ func TestParseJet4CheckBoxNumericTail(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("default-height CheckBox numeric properties=%+v want=%+v", got, want)
+	}
+
+	sectionBoundaryTail := []byte{
+		0xFF, 0x05, 0x00, 0x6A, 0x00, 0x31, 0x02, 0x32, 0x55, 0x36, 0x00,
+		0x60, 0xDC, 0x14, 0x62, 0xB4, 0x00, 0x63, 0xD8, 0x00,
+		0x9E, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x10,
+	}
+	got, ok = parseJet4CheckBoxNumericTail(sectionBoundaryTail)
+	if !ok || got.Geometry != (formControlGeometry{Left: 5340, Width: 180, Height: 216}) {
+		t.Fatalf("分区边界 CheckBox properties=%+v ok=%v", got, ok)
 	}
 }
 
@@ -2184,6 +2201,22 @@ func TestParseJet4TabControlNumericTail(t *testing.T) {
 				Geometry: formControlGeometry{Top: 360, Width: 11760, Height: 7200}, HasGeometry: true,
 			},
 		},
+		{
+			name: "solid background style",
+			tail: []byte{
+				0xFD, 0x7B, 0x00,
+				0x31, 0x57,
+				0x61, 0xA4, 0x01,
+				0x62, 0x44, 0x34,
+				0x63, 0x38, 0x22,
+				0x66, 0x02, 0x00,
+				0xDC, 0x12,
+			},
+			want: jet4TabControlNumericProperties{
+				BackStyle: 1, FontSize: 8, FontWeight: 400, Visible: true,
+				Geometry: formControlGeometry{Top: 420, Width: 13380, Height: 8760}, HasGeometry: true,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2280,9 +2313,9 @@ func TestParseJet4TabPageNumericTail(t *testing.T) {
 				HasGeometry: true,
 			}
 			if tt.name == "legacy mask two" {
-				want.Geometry = formControlGeometry{Left: 98, Top: 720, Width: 11565, Height: 6743}
+				want.Geometry = formControlGeometry{Left: 98, Top: 735, Width: 11565, Height: 6728}
 			} else if tt.name == "legacy mask six" {
-				want.Geometry = formControlGeometry{Left: 98, Top: 780, Width: 14505, Height: 8243}
+				want.Geometry = formControlGeometry{Left: 98, Top: 795, Width: 14505, Height: 8228}
 			}
 			if got != want {
 				t.Fatalf("TabPage numeric properties=%+v want=%+v", got, want)
@@ -2489,6 +2522,13 @@ func TestParseJet4FormDefaultView(t *testing.T) {
 		{
 			name: "continuous forms",
 			data: []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x00, 0x0F},
+			want: 1,
+			ok:   true,
+		},
+		{
+			name: "continuous forms alternate template",
+			data: []byte{0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x96, 0x00, 0x06, 0x0F, 0x11, 0x15, 0x19, 0x31, 0x04, 0x33, 0x01},
 			want: 1,
 			ok:   true,
 		},
