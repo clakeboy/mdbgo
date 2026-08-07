@@ -502,7 +502,8 @@ func parseJet4ExpandedNumericSet(
 	for index, name := range labelNames {
 		result.labels[name] = labelValues[index]
 	}
-	applyJet4TextBoxColorDefaults(textBoxValues)
+	defaultView, hasDefaultView := parseJet4FormDefaultView(normalized)
+	applyJet4TextBoxColorDefaults(textBoxValues, hasDefaultView && defaultView == 1)
 	for index, name := range textBoxNames {
 		result.textBoxes[name] = textBoxValues[index]
 	}

@@ -120,7 +120,8 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 			}
 		}
 	}
-	applyJet4TextBoxColorDefaults(numericByTextBox)
+	defaultView, hasDefaultView := parseJet4FormDefaultView(data)
+	applyJet4TextBoxColorDefaults(numericByTextBox, hasDefaultView && defaultView == 1)
 
 	hasTabPages := false
 	for _, control := range controls {
@@ -156,10 +157,9 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 }
 
 // applyJet4TextBoxColorDefaults 还原窗体级 TextBox 模板省略的 ForeColor。
-// Datasheet 的 0x30 项或 RGB 模板的 0x35 标志只需在部分记录中出现，
-// 同一窗体里其余未显式写 0x9F 的 TextBox 也使用默认黑色。
-func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties) {
-	usesRGBDefaults := false
+// 连续窗体、Datasheet 的 0x30 项或 RGB 模板的 0x35 标志都以黑色为
+// 默认文字色；同一窗体里未显式写 0x9F 的 TextBox 继承该默认值。
+func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties, usesRGBDefaults bool) {
 	for _, props := range records {
 		if props.usesRGBDefaults {
 			usesRGBDefaults = true

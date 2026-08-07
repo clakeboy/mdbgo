@@ -939,8 +939,22 @@ func TestBuildAccessJSONFOem(t *testing.T) {
 // TestBuildAccessJSONDMSWindowsParity 验证 dms-0805.mdb 的全部窗体与
 // Windows Access COM 导出夹具保持逐字段一致。
 func TestBuildAccessJSONDMSWindowsParity(t *testing.T) {
-	dbPath := filepath.Join("testdb", "mdbs", "dms-0805.mdb")
-	fixturePattern := filepath.Join("testdb", "dms", "export", "*_org.json")
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "dms-0805.mdb"),
+		filepath.Join("testdb", "dms", "export", "*_org.json"))
+}
+
+// TestBuildAccessJSONHTSUSWindowsParity 验证 HTSUS-0807.mdb 的全部窗体与
+// Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONHTSUSWindowsParity(t *testing.T) {
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "HTSUS-0807.mdb"),
+		filepath.Join("testdb", "HTSUS", "export", "*_org.json"))
+}
+
+// testBuildAccessJSONWindowsParity 逐个构建指定 MDB 的窗体并与 Windows 夹具比较。
+func testBuildAccessJSONWindowsParity(t *testing.T, dbPath, fixturePattern string) {
+	t.Helper()
 	fixturePaths, err := filepath.Glob(fixturePattern)
 	if err != nil {
 		t.Fatalf("glob Windows fixtures failed: %v", err)

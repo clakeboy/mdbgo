@@ -765,17 +765,15 @@ func parseJet4FormDefaultView(data []byte) (int, bool) {
 	}
 	switch data[10] {
 	case 0x06:
-		// 少数连续窗体沿用 0x06 模板类型，并以紧随其后的 0x31=0x04
-		// 保存连续窗体变体；普通单窗体的 0x31 值为 0x01 或不出现。
-		for pos := 11; pos+1 < len(data) && pos < 32; {
-			if data[pos] >= 0x30 && data[pos] <= 0x5F {
-				if data[pos] == 0x31 && data[pos+1] == 0x04 {
-					return 1, true
-				}
-				pos += 2
-				continue
-			}
-			pos++
+		// 少数连续窗体沿用 0x06 模板类型；可选标志数量不同，但都会
+		// 连续保存 31 04 33 01。单窗体的 RGB 模板则是 31 04 32 00，
+		// 不能只凭 31 04 判定为连续窗体。
+		limit := len(data)
+		if limit > 32 {
+			limit = 32
+		}
+		if bytes.Contains(data[11:limit], []byte{0x31, 0x04, 0x33, 0x01}) {
+			return 1, true
 		}
 		return 0, true
 	case 0x0F:
