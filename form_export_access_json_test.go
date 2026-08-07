@@ -835,6 +835,30 @@ func TestBuildAccessJSONFActBranchQuery(t *testing.T) {
 		"f_act_branch_query", filepath.Join("testdb", "f_act_branch_query_org.json"))
 }
 
+func TestBuildAccessJSONFAemHsSummary(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "dms-0805.mdb"),
+		"f_aem_hs_summary", filepath.Join("testdb", "f_aem_hs_summary_org.json"))
+}
+
+func TestBuildAccessJSONFOemHsSummary(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "dms-0805.mdb"),
+		"f_oem_hs_summary", filepath.Join("testdb", "f_oem_hs_summary_org.json"))
+}
+
+func TestBuildAccessJSONFHtsUsQ1Query(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "HTSUS-0807.mdb"),
+		"f_hts_us_q1_query", filepath.Join("testdb", "f_hts_us_q1_query_org.json"))
+}
+
+func TestBuildAccessJSONFAbi01HsuPostQuery(t *testing.T) {
+	testBuildAccessJSONAgainstRawFixtureAtDB(t,
+		filepath.Join("testdb", "mdbs", "HTSUS-0807.mdb"),
+		"f_abi_01_hsu_post_query", filepath.Join("testdb", "f_abi_01_hsu_post_query_org.json"))
+}
+
 func TestBuildAccessJSONFAbiEntry(t *testing.T) {
 	testBuildAccessJSONAgainstRawFixture(t,
 		"f_abi_entry", filepath.Join("testdb", "f_abi_entry_org.json"))

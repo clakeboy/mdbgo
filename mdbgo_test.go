@@ -1432,6 +1432,26 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		got.Geometry != (formControlGeometry{Left: 7260, Top: 1380, Width: 1440, Height: 300}) {
 		t.Fatalf("default-width ComboBox numeric properties=%+v ok=%v", got, ok)
 	}
+
+	guidTail := []byte{
+		0xFD, 0x6F, 0x00, 0x01, 0x32, 0x00, 0x35, 0x55, 0x44, 0x03,
+		0x61, 0x0C, 0x00,
+		0x62, 0xA0, 0x05,
+		0x63, 0xA0, 0x14,
+		0x64, 0xC0, 0x03,
+		0x65, 0x18, 0x06,
+		0x66, 0x2C, 0x01,
+		0x6E, 0x06, 0x00,
+		0xBE, 0x10, 0xE9, 0xF2, 0x67, 0x4E, 0x9D, 0x8C, 0x57, 0x4B,
+		0x8A, 0xAF, 0xBF, 0x61, 0x8D, 0xED, 0x2F, 0xE5,
+		0xDC, 0x1E,
+	}
+	got, ok = parseJet4ComboBoxNumericTail(guidTail)
+	if !ok || got.ColumnCount != 0 || got.ListRows != 12 || got.ListWidth != 1440 ||
+		got.BoundColumn != 1 || got.BackStyle != 1 || got.TabIndex != 6 || !got.HasTabIndex ||
+		got.Geometry != (formControlGeometry{Left: 5280, Top: 960, Width: 1560, Height: 300}) {
+		t.Fatalf("GUID-tail ComboBox numeric properties=%+v ok=%v", got, ok)
+	}
 }
 
 func TestParseJet4ComboBoxDefaultWidth(t *testing.T) {
@@ -1990,6 +2010,30 @@ func TestParseJet4SubFormNumericTail(t *testing.T) {
 			},
 		},
 		{
+			name: "form header record before nested subform",
+			tail: []byte{
+				0xFD, 0x98, 0x00, 0x02, 0x33, 0x01,
+				0x60, 0xC0, 0x21,
+				0x9C, 0xC0, 0xC0, 0xC0, 0x00,
+				0xDF, 0x0C, 0x44, 0x00, 0x65, 0x00, 0x74, 0x00, 0x61, 0x00, 0x69, 0x00, 0x6C, 0x00,
+				0xE7, 0x10, 0xE3, 0x69, 0x80, 0x88, 0xB6, 0x4C, 0x37, 0x44,
+				0xAC, 0xB9, 0xF9, 0x75, 0x38, 0x58,
+				0xDF, 0x95,
+				0xFF, 0x1E, 0x00, 0x70, 0x00,
+				0x33, 0x55, 0x35, 0x01,
+				0x60, 0xF0, 0x00,
+				0x61, 0x90, 0x06,
+				0x62, 0x50, 0x37,
+				0x63, 0x04, 0x1A,
+				0xDC, 0x2E,
+			},
+			want: jet4SubFormNumericProperties{
+				Visible:     true,
+				Geometry:    formControlGeometry{Left: 240, Top: 1680, Width: 14160, Height: 6660},
+				HasGeometry: true,
+			},
+		},
+		{
 			name: "standard record with can shrink and tab index",
 			tail: []byte{
 				0xFD, 0x70, 0x00,
@@ -2332,6 +2376,29 @@ func TestParseJet4RectangleNumericTail(t *testing.T) {
 				Geometry: formControlGeometry{Left: 300, Top: 2448, Width: 5100, Height: 2520}, HasGeometry: true,
 			},
 		},
+		{
+			name: "form header record before nested rectangle",
+			tail: []byte{
+				0xFD, 0x98, 0x00, 0x02, 0x33, 0x01,
+				0x60, 0xC0, 0x21,
+				0x9C, 0xC0, 0xC0, 0xC0, 0x00,
+				0xDF, 0x0C, 0x44, 0x00, 0x65, 0x00, 0x74, 0x00, 0x61, 0x00, 0x69, 0x00, 0x6C, 0x00,
+				0xE7, 0x10, 0xCE, 0x5D, 0xCA, 0x36, 0x8D, 0x13, 0x51, 0x48,
+				0xA4, 0xD5, 0x78, 0x66, 0x61, 0x4C, 0x44, 0xB0,
+				0xFF, 0x1F, 0x00, 0x65, 0x00,
+				0x31, 0x00, 0x32, 0x01, 0x34, 0x01, 0x35, 0x5D,
+				0x60, 0x3C, 0x00,
+				0x62, 0x50, 0x37,
+				0x63, 0xA4, 0x01,
+				0x9C, 0x35, 0x58, 0x75, 0x00,
+				0xDC, 0x16,
+			},
+			want: jet4RectangleNumericProperties{
+				BackStyle: 1, BorderStyle: 1, BorderWidth: 1,
+				BackColor: "#355875", BackColorValue: 7690293, BorderColor: "#000000", Visible: true,
+				Geometry: formControlGeometry{Left: 60, Width: 14160, Height: 420}, HasGeometry: true,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2471,6 +2538,23 @@ func TestParseJet4FormTextPropertiesSkipsBinaryCaption(t *testing.T) {
 	formProps, _ := parseJet4FormTextProperties(data, controls)
 	if got := formPropertyText(formProps, 0x0011); got != "Query Master" {
 		t.Fatalf("Caption=%q want=%q", got, "Query Master")
+	}
+}
+
+// TestScanJet4TaggedTextFieldsBeforeCompletesCrossingField 验证文本项起点位于
+// 窗体前缀内时，即使内容越过误判的控件边界也仍按字段长度完整读取。
+func TestScanJet4TaggedTextFieldsBeforeCompletesCrossingField(t *testing.T) {
+	recordSource := encodeUTF16LE("v_aem_hs_summary_list")
+	data := append([]byte{0xDC, byte(len(recordSource))}, recordSource...)
+	caption := encodeUTF16LE("HS Code + Goods Group Detail List")
+	captionStart := len(data)
+	data = append(data, 0xDD, byte(len(caption)))
+	data = append(data, caption...)
+
+	fields := scanJet4TaggedTextFieldsBefore(data, captionStart+20)
+	if len(fields) != 2 || fields[0].Value != "v_aem_hs_summary_list" ||
+		fields[1].Tag != 0xDD || fields[1].Value != "HS Code + Goods Group Detail List" {
+		t.Fatalf("窗体前缀文本字段=%+v", fields)
 	}
 }
 
@@ -2746,7 +2830,7 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 		0xDC, 0x12,
 	}
 	got, ok = parseJet4LabelNumericTail(defaultBackColorTail)
-	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0 {
+	if !ok || got.BackColorValue != 0x00FFFFFF || got.ForeColorValue != 0 {
 		t.Fatalf("Label default native colors=%+v ok=%v", got, ok)
 	}
 
@@ -2757,7 +2841,7 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 		t.Fatalf("Label system ForeColor defaults=%+v ok=%v", got, ok)
 	}
 
-	systemDefaultsTail := []byte{
+	omittedColorsTail := []byte{
 		0xFE, 0x64, 0x00, 0x35, 0xFF, 0x37, 0x01,
 		0x60, 0xD4, 0x1C,
 		0x61, 0x28, 0x05,
@@ -2766,8 +2850,8 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 		0x64, 0x09, 0x00,
 		0xDC, 0x12,
 	}
-	got, ok = parseJet4LabelNumericTail(systemDefaultsTail)
-	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
+	got, ok = parseJet4LabelNumericTail(omittedColorsTail)
+	if !ok || got.BackColorValue != 0x00FFFFFF || got.ForeColorValue != 0 {
 		t.Fatalf("Label omitted native colors=%+v ok=%v", got, ok)
 	}
 
@@ -2782,24 +2866,31 @@ func TestParseJet4LabelNumericTailNativeColorVariants(t *testing.T) {
 		0xDC, 0x10,
 	}
 	got, ok = parseJet4LabelNumericTail(backColorOnlyTail)
-	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0 {
 		t.Fatalf("Label BackColor-only native colors=%+v ok=%v", got, ok)
 	}
 
-	records := map[int]jet4LabelNumericProperties{
-		0: got,
-		1: func() jet4LabelNumericProperties {
-			value, parsed := parseJet4LabelNumericTail(systemDefaultsTail)
-			if !parsed {
-				t.Fatal("parse omitted Label color record failed")
-			}
-			return value
-		}(),
+	componentDefaults := parseJet4LabelColorDefaults([]byte{
+		0xFF, 0x0C, 0x00, 0x64, 0x00, 0x32, 0x00,
+		0xFD, 0x65, 0x00,
+	})
+	if componentDefaults != jet4LabelBuiltInColorDefaults() {
+		t.Fatalf("Label component defaults=%+v", componentDefaults)
 	}
-	applyJet4LabelColorDefaults(records)
-	if records[0].BackColorValue != 0x8000000F || records[0].ForeColorValue != 0 ||
-		records[1].BackColorValue != 0x00FFFFFF || records[1].ForeColorValue != 0 {
-		t.Fatalf("Label form RGB defaults=%+v", records)
+
+	formDefaults := parseJet4LabelColorDefaults([]byte{
+		0xFF, 0x0C, 0x00, 0x64, 0x00, 0x32, 0x00,
+		0x9C, 0x0F, 0x00, 0x00, 0x80,
+		0x9E, 0x12, 0x00, 0x00, 0x80,
+		0xFD, 0x65, 0x00,
+	})
+	got, ok = parseJet4LabelNumericTailWithDefaults(omittedColorsTail, formDefaults)
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0x80000012 {
+		t.Fatalf("Label form defaults=%+v ok=%v", got, ok)
+	}
+	got, ok = parseJet4LabelNumericTailWithDefaults(defaultBackColorTail, formDefaults)
+	if !ok || got.BackColorValue != 0x8000000F || got.ForeColorValue != 0 {
+		t.Fatalf("Label explicit control color precedence=%+v ok=%v", got, ok)
 	}
 }
 

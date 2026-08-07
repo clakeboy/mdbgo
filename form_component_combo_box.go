@@ -268,8 +268,9 @@ func parseJet4ComboBoxNumericTailWithDefaultWidth(
 				return result, false
 			}
 			pos += 5
-		case 0xBC:
-			// 后续是 ColumnHeads/列格式文本及对象 GUID。
+		case 0xBC, 0xBE:
+			// 后续是 ColumnHeads、列格式文本或带长度的对象 GUID。
+			// 数值属性均位于这些尾字段之前，不能继续把 GUID 字节识别成标签。
 			pos = len(tail)
 		case 0xDC:
 			pos = len(tail)

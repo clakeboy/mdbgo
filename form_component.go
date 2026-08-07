@@ -521,7 +521,7 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 	var formProps []FormProperty
 	if firstControlOffset > 0 && firstControlOffset <= len(data) {
 		prefix := data[:firstControlOffset]
-		prefixFields := scanJet4TaggedTextFields(prefix)
+		prefixFields := scanJet4TaggedTextFieldsBefore(data, firstControlOffset)
 		// recordSourceFieldIndex 记录已验证 RecordSource 的物理顺序，后续只在它之后
 		// 查找 Caption，避免窗体头部的 GUID 或数值字节偶然组成 0xDD 文本标签。
 		recordSourceFieldIndex := -1
@@ -843,8 +843,21 @@ func isJet4ControlGUIDTag(tag byte) bool {
 }
 
 func scanJet4TaggedTextFields(data []byte) []jet4TaggedTextField {
+	return scanJet4TaggedTextFieldsBefore(data, len(data))
+}
+
+// scanJet4TaggedTextFieldsBefore 扫描起点位于 limit 之前的紧凑文本项。
+// 字段内容允许越过 limit，因为窗体 Caption 可能包含与 Section 同名的单词，
+// 控件定位器会把该单词误认为设计区起点，但字段长度仍能确定完整文本边界。
+func scanJet4TaggedTextFieldsBefore(data []byte, limit int) []jet4TaggedTextField {
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > len(data) {
+		limit = len(data)
+	}
 	fields := make([]jet4TaggedTextField, 0)
-	for pos := 0; pos+4 <= len(data); pos++ {
+	for pos := 0; pos < limit && pos+4 <= len(data); pos++ {
 		tag := data[pos]
 		byteLen := int(data[pos+1])
 		if tag < 0xC0 || byteLen < 2 || byteLen%2 != 0 || pos+2+byteLen > len(data) {

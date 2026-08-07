@@ -177,9 +177,9 @@ func main() {
 MDBGO_EXPORT_FORM_NAME=f_abia_master \
 go test -run TestExportFormAsAccessJSON -v -count=1
 
-MDBGO_TEST_DB=testdb/mdbs/eIT.mdb \
-MDBGO_EXPORT_FORM_NAME=f_act_branch_query \
-MDBGO_EXPORT_FORM_OUTPUT=testdb/f_act_branch_query_mdbgo.json \
+MDBGO_TEST_DB=testdb/mdbs/dms-0805.mdb \
+MDBGO_EXPORT_FORM_NAME=f_aem_hs_summary \
+MDBGO_EXPORT_FORM_OUTPUT=testdb/f_aem_hs_summary_mdbgo.json \
 go test -run TestExportFormAsAccessJSON -v -count=1
 ```
 

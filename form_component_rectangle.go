@@ -176,20 +176,30 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 	}
 
 	payloadPos := -1
-	for pos := 0; pos+3 <= len(tail) && pos < 12; pos++ {
-		if tail[pos] == 0xFD && tail[pos+1] == 0x65 && tail[pos+2] == 0x00 {
-			payloadPos = pos + 3
+	for recordPos := 0; recordPos+3 <= len(tail); recordPos++ {
+		marker := tail[recordPos]
+		if (marker == 0xFD || marker == 0xFE) &&
+			tail[recordPos+1] == 0x65 && tail[recordPos+2] == 0x00 {
+			payloadPos = recordPos + 3
 			break
 		}
-	}
-	// 第一个 Rectangle 若紧邻 TabPage 边界，记录会以 FF 掩码开头，
-	// 随后的 65 00 才是 Rectangle 类型标记。
-	if payloadPos < 0 && tail[0] == 0xFF {
-		for pos := 1; pos+2 <= len(tail) && pos < 8; pos++ {
-			if tail[pos] == 0x65 && tail[pos+1] == 0x00 {
-				payloadPos = pos + 2
+		if marker != 0xFF {
+			continue
+		}
+		// FormHeader、Detail 或 TabPage 的数值尾可能先保存自身记录，
+		// 再以 FF 掩码边界嵌入下一条 Rectangle 记录。
+		boundaryEnd := recordPos + 8
+		if boundaryEnd > len(tail) {
+			boundaryEnd = len(tail)
+		}
+		for typePos := recordPos + 1; typePos+2 <= boundaryEnd; typePos++ {
+			if tail[typePos] == 0x65 && tail[typePos+1] == 0x00 {
+				payloadPos = typePos + 2
 				break
 			}
+		}
+		if payloadPos >= 0 {
+			break
 		}
 	}
 	if payloadPos < 0 {

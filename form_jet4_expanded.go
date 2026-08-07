@@ -406,6 +406,13 @@ func parseJet4ExpandedNumericSet(
 	optionButtonDefaultHeight := parseJet4OptionButtonDefaultHeight(normalized)
 	comboBoxDefaultWidth := parseJet4ComboBoxDefaultWidth(normalized)
 	rectangleDefaultHeight := parseJet4RectangleDefaultHeight(normalized)
+	labelPrefixEnd := len(normalized)
+	for _, offset := range orderedFormControlOffsets(normalized, controls) {
+		if offset >= 0 && offset < labelPrefixEnd {
+			labelPrefixEnd = offset
+		}
+	}
+	labelColorDefaults := parseJet4LabelColorDefaults(normalized[:labelPrefixEnd])
 	labelNames := make([]string, 0)
 	labelValues := make(map[int]jet4LabelNumericProperties)
 	textBoxNames := make([]string, 0)
@@ -429,7 +436,8 @@ func parseJet4ExpandedNumericSet(
 		}
 		switch record.recordType {
 		case 0x64:
-			if props, ok := parseJet4LabelNumericTail(record.compact); ok {
+			if props, ok := parseJet4LabelNumericTailWithDefaults(
+				record.compact, labelColorDefaults); ok {
 				labelValues[len(labelNames)] = props
 				labelNames = append(labelNames, name)
 			}
@@ -491,7 +499,6 @@ func parseJet4ExpandedNumericSet(
 		}
 	}
 
-	applyJet4LabelColorDefaults(labelValues)
 	for index, name := range labelNames {
 		result.labels[name] = labelValues[index]
 	}

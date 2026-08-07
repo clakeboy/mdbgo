@@ -39,6 +39,11 @@ type jet4LabelNumericProperties struct {
 	hasForeColor   bool
 }
 
+type jet4LabelColorDefaults struct {
+	BackColorValue uint32
+	ForeColorValue uint32
+}
+
 func (props jet4LabelNumericProperties) formProperties() []FormProperty {
 	return []FormProperty{
 		{ID: 0x001D, Name: FormPropertyIDToName(0x001D), ValueType: "Byte", Value: strconv.Itoa(int(props.BackStyle))},
@@ -92,11 +97,16 @@ func parseJet4FormLabelProperties(data []byte, controls []FormControlInfo) map[s
 		})
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
+	prefixEnd := len(data)
+	if len(blocks) > 0 {
+		prefixEnd = blocks[0].offset
+	}
+	colorDefaults := parseJet4LabelColorDefaults(data[:prefixEnd])
 
 	numericByLabel := make(map[int]jet4LabelNumericProperties, len(labels))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4LabelNumericTail(tail)
+		props, ok := parseJet4LabelNumericTailWithDefaults(tail, colorDefaults)
 		if !ok {
 			continue
 		}
@@ -109,53 +119,93 @@ func parseJet4FormLabelProperties(data []byte, controls []FormControlInfo) map[s
 			}
 		}
 	}
-	applyJet4LabelColorDefaults(numericByLabel)
 	for i, props := range numericByLabel {
 		result[strings.ToLower(labels[i].name)] = props
 	}
 	return result
 }
 
-// applyJet4LabelColorDefaults 还原窗体保存时采用的 Label 控件模板。
-// Jet4 只写与模板不同的颜色：旧式 RGB 模板是白底黑字，系统模板是
-// ButtonFace/ButtonText。出现“只写 BackColor”的记录时，其省略的
-// ForeColor 即黑色，也能据此识别同一窗体内完全省略颜色的 Label。
-func applyJet4LabelColorDefaults(records map[int]jet4LabelNumericProperties) {
-	usesRGBDefaultColors := false
-	for _, props := range records {
-		// RGB 模板的默认背景是白色；需要 ButtonFace 时会单独写 0x9C，
-		// 同时继续省略默认黑色 ForeColor。系统模板本身默认 ButtonFace，
-		// 不会产生这种“只写默认系统背景”的记录。
-		if props.hasBackColor && !props.hasForeColor && props.BackColorValue == 0x8000000F {
-			usesRGBDefaultColors = true
-			break
-		}
-	}
-	if !usesRGBDefaultColors {
-		return
-	}
-	for index, props := range records {
-		if !props.hasBackColor {
-			props.BackColorValue = 0x00FFFFFF
-			props.BackColor = accessColorHex(props.BackColorValue)
-		}
-		if !props.hasForeColor {
-			props.ForeColorValue = 0
-			props.ForeColor = accessColorHex(props.ForeColorValue)
-		}
-		records[index] = props
+// jet4LabelBuiltInColorDefaults 返回 Access Label 组件的内建颜色默认值。
+func jet4LabelBuiltInColorDefaults() jet4LabelColorDefaults {
+	return jet4LabelColorDefaults{
+		BackColorValue: 0x00FFFFFF,
+		ForeColorValue: 0,
 	}
 }
 
+// parseJet4LabelColorDefaults 读取首个命名控件之前的窗体级 Label 模板。
+// 模板未保存某个颜色时继续沿用 Label 组件的内建默认值。
+func parseJet4LabelColorDefaults(prefix []byte) jet4LabelColorDefaults {
+	defaults := jet4LabelBuiltInColorDefaults()
+	for recordPos := 0; recordPos+3 <= len(prefix); recordPos++ {
+		payloadPos := -1
+		switch prefix[recordPos] {
+		case 0xFD, 0xFE:
+			if prefix[recordPos+1] == 0x64 && prefix[recordPos+2] == 0x00 {
+				payloadPos = recordPos + 3
+			}
+		case 0xFF:
+			if recordPos+5 <= len(prefix) && prefix[recordPos+2] == 0x00 &&
+				prefix[recordPos+3] == 0x64 && prefix[recordPos+4] == 0x00 {
+				payloadPos = recordPos + 5
+			}
+		}
+		if payloadPos < 0 {
+			continue
+		}
+
+		for pos := payloadPos; pos < len(prefix); {
+			tag := prefix[pos]
+			switch {
+			case tag == 0xFD || tag == 0xFE || tag == 0xFF:
+				return defaults
+			case tag >= 0x30 && tag <= 0x5F:
+				if pos+2 > len(prefix) {
+					return defaults
+				}
+				pos += 2
+			case tag >= 0x60 && tag <= 0x6F:
+				if pos+3 > len(prefix) {
+					return defaults
+				}
+				pos += 3
+			case tag == 0x9C || tag == 0x9D || tag == 0x9E:
+				if pos+5 > len(prefix) {
+					return defaults
+				}
+				value := le32(prefix[pos+1:])
+				if tag == 0x9C {
+					defaults.BackColorValue = value
+				} else {
+					defaults.ForeColorValue = value
+				}
+				pos += 5
+			default:
+				return defaults
+			}
+		}
+		return defaults
+	}
+	return defaults
+}
+
+// parseJet4LabelNumericTail 使用 Label 组件内建默认值解析单条数值记录。
 func parseJet4LabelNumericTail(tail []byte) (jet4LabelNumericProperties, bool) {
+	return parseJet4LabelNumericTailWithDefaults(tail, jet4LabelBuiltInColorDefaults())
+}
+
+// parseJet4LabelNumericTailWithDefaults 按“控件显式值、窗体模板、组件内建值”
+// 的优先级解析单条 Label 数值记录。
+func parseJet4LabelNumericTailWithDefaults(
+	tail []byte,
+	defaults jet4LabelColorDefaults,
+) (jet4LabelNumericProperties, bool) {
 	result := jet4LabelNumericProperties{
 		FontSize:       8,
-		BackColor:      accessColorHex(0x8000000F),
-		BackColorValue: 0x8000000F,
-		// 系统控件模板省略颜色时使用 ButtonFace/ButtonText；窗体若采用
-		// 白底黑字模板，会在整组记录解析完成后由 applyJet4LabelColorDefaults 覆盖。
-		ForeColor:      accessColorHex(0x80000012),
-		ForeColorValue: 0x80000012,
+		BackColor:      accessColorHex(defaults.BackColorValue),
+		BackColorValue: defaults.BackColorValue,
+		ForeColor:      accessColorHex(defaults.ForeColorValue),
+		ForeColorValue: defaults.ForeColorValue,
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -256,12 +306,6 @@ func parseJet4LabelNumericTail(tail []byte) (jet4LabelNumericProperties, bool) {
 	}
 	result.hasBackColor = foundBackColor
 	result.hasForeColor = foundForeColor
-	// 未编码 BackColor 且显式使用系统 ForeColor 时，Access 保存的原生组合
-	// 使用白色背景；两项都省略时则保留上面的系统默认组合。
-	if !foundBackColor && foundForeColor && result.ForeColorValue&0x80000000 != 0 {
-		result.BackColorValue = 0x00FFFFFF
-		result.BackColor = accessColorHex(result.BackColorValue)
-	}
 	if result.Geometry.Width <= 0 || result.Geometry.Height <= 0 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width > 32767 || result.Geometry.Height > 32767 {

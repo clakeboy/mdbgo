@@ -120,19 +120,30 @@ func parseJet4SubFormNumericTail(tail []byte) (jet4SubFormNumericProperties, boo
 	}
 
 	payloadPos := -1
-	for pos := 0; pos+3 <= len(tail) && pos < 12; pos++ {
-		if (tail[pos] == 0xFD || tail[pos] == 0xFE) && tail[pos+1] == 0x70 && tail[pos+2] == 0x00 {
-			payloadPos = pos + 3
+	for recordPos := 0; recordPos+3 <= len(tail); recordPos++ {
+		marker := tail[recordPos]
+		if (marker == 0xFD || marker == 0xFE) &&
+			tail[recordPos+1] == 0x70 && tail[recordPos+2] == 0x00 {
+			payloadPos = recordPos + 3
 			break
 		}
-	}
-	// Detail 或 TabPage 边界会使用 FF 掩码头，70 00 仍是稳定的 SubForm 类型标记。
-	if payloadPos < 0 && tail[0] == 0xFF {
-		for pos := 1; pos+2 <= len(tail) && pos < 8; pos++ {
-			if tail[pos] == 0x70 && tail[pos+1] == 0x00 {
-				payloadPos = pos + 2
+		if marker != 0xFF {
+			continue
+		}
+		// Detail、FormHeader 或 TabPage 的数值尾可能先保存自身记录，
+		// 再以 FF 掩码边界嵌入下一条 SubForm 记录。
+		boundaryEnd := recordPos + 8
+		if boundaryEnd > len(tail) {
+			boundaryEnd = len(tail)
+		}
+		for typePos := recordPos + 1; typePos+2 <= boundaryEnd; typePos++ {
+			if tail[typePos] == 0x70 && tail[typePos+1] == 0x00 {
+				payloadPos = typePos + 2
 				break
 			}
+		}
+		if payloadPos >= 0 {
+			break
 		}
 	}
 	if payloadPos < 0 {
