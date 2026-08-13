@@ -90,12 +90,13 @@ func formObjectStreamsFromPurego(db *DB, formName string) (*FormObjectStreams, e
 		return nil, err
 	}
 	return &FormObjectStreams{
-		FormName:  po.FormName,
-		StorageID: po.StorageID,
-		Blob:      po.Blob,
-		TypeInfo:  po.TypeInfo,
-		PropData:  po.PropData,
-		BlobDelta: po.BlobDelta,
+		FormName:      po.FormName,
+		StorageID:     po.StorageID,
+		ObjectStorage: db.Format.ObjectStorage,
+		Blob:          po.Blob,
+		TypeInfo:      po.TypeInfo,
+		PropData:      po.PropData,
+		BlobDelta:     po.BlobDelta,
 	}, nil
 }
 

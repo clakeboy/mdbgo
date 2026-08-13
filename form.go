@@ -206,6 +206,7 @@ func (db *DB) ExportFormContents() ([]FormContent, error) {
 					errOnce.Do(func() { firstErr = err })
 					return
 				}
+				streams.ObjectStorage = db.Format.ObjectStorage
 				content, err := ParseFormContent(streams)
 				if err != nil {
 					errOnce.Do(func() { firstErr = err })
@@ -245,7 +246,8 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	}
 	jet4Data := normalizeJet4ExpandedFormBlob(streams.Blob, controls)
 	formProps, controlGroups := parseFormBlob(streams.Blob)
-	jet4FormProps, jet4ControlProps := parseJet4FormTextProperties(jet4Data, controls)
+	jet4FormProps, jet4ControlProps := parseJet4FormTextProperties(
+		jet4Data, controls, streams.ObjectStorage == "MSysAccessStorage")
 	if expandedJet4 {
 		jet4FormProps = mergeFormProperties(
 			parseJet4ExpandedFormTextProperties(streams.Blob), jet4FormProps)
@@ -272,12 +274,15 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(jet4Data, controls)
 	if expandedJet4 {
 		// Access 2003 的展开记录在每个数值记录内保存控件 Name。物理顺序
-		// 解释器优先；按 Name 解析用于补齐没有被顺序配对器识别的记录。
+		// 解释器只作为兼容回退；按 Name 解析的记录应覆盖物理顺序配对，
+		// 避免缺失或额外记录导致同类控件连续错位。
 		expanded := parseJet4ExpandedNumericSet(streams.Blob, jet4Data, controls)
 		for name, value := range expanded.textBoxes {
-			if _, exists := jet4NumericProps[name]; !exists {
-				jet4NumericProps[name] = value
+			if previous, exists := jet4NumericProps[name]; exists && !value.HasTabIndex {
+				value.TabIndex = previous.TabIndex
+				value.HasTabIndex = previous.HasTabIndex
 			}
+			jet4NumericProps[name] = value
 		}
 		for name, value := range expanded.labels {
 			if _, exists := jet4LabelProps[name]; !exists {
@@ -294,9 +299,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			jet4ButtonProps[name] = value
 		}
 		for name, value := range expanded.checkBoxes {
-			if _, exists := jet4CheckBoxProps[name]; !exists {
-				jet4CheckBoxProps[name] = value
-			}
+			jet4CheckBoxProps[name] = value
 		}
 		for name, value := range expanded.rectangles {
 			// Rectangle 没有跨控件保存的数值尾，Name 是稳定边界。
@@ -311,9 +314,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			jet4OptionButtonProps[name] = value
 		}
 		for name, value := range expanded.subForms {
-			if _, exists := jet4SubFormProps[name]; !exists {
-				jet4SubFormProps[name] = value
-			}
+			jet4SubFormProps[name] = value
 		}
 		for name, value := range expanded.tabControls {
 			if _, exists := jet4TabControlProps[name]; !exists {

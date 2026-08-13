@@ -496,17 +496,22 @@ func accessRawJSONKeys(data []byte) ([]string, error) {
 }
 
 type accessRawJSONBuilder struct {
-	entries []AccessObjectEntry
-	cache   map[string]*FormContent
-	active  map[string]bool
+	entries       []AccessObjectEntry
+	objectStorage string
+	cache         map[string]*FormContent
+	active        map[string]bool
 }
 
-func newAccessRawJSONBuilder(entries []AccessObjectEntry) *accessRawJSONBuilder {
-	return &accessRawJSONBuilder{
+func newAccessRawJSONBuilder(entries []AccessObjectEntry, objectStorage ...string) *accessRawJSONBuilder {
+	builder := &accessRawJSONBuilder{
 		entries: entries,
 		cache:   make(map[string]*FormContent),
 		active:  make(map[string]bool),
 	}
+	if len(objectStorage) > 0 {
+		builder.objectStorage = objectStorage[0]
+	}
+	return builder
 }
 
 func (builder *accessRawJSONBuilder) formContent(formName string) (*FormContent, error) {
@@ -518,6 +523,7 @@ func (builder *accessRawJSONBuilder) formContent(formName string) (*FormContent,
 	if err != nil {
 		return nil, err
 	}
+	streams.ObjectStorage = builder.objectStorage
 	content, err := ParseFormContent(streams)
 	if err != nil {
 		return nil, err
@@ -854,7 +860,7 @@ func TestExportAllFormsAsAccessJSON(t *testing.T) {
 		t.Fatalf("create output dir %s failed: %v", outputDir, err)
 	}
 
-	builder := newAccessRawJSONBuilder(entries)
+	builder := newAccessRawJSONBuilder(entries, db.Format.ObjectStorage)
 	exported, failed := 0, 0
 	for _, name := range formNames {
 		form, err := builder.buildForm(name)
@@ -936,12 +942,20 @@ func TestBuildAccessJSONFOem(t *testing.T) {
 		"f_oem", filepath.Join("testdb", "f_oem_org.json"))
 }
 
-// TestBuildAccessJSONDMSWindowsParity 验证 dms-0805.mdb 的全部窗体与
-// Windows Access COM 导出夹具保持逐字段一致。
+// TestBuildAccessJSONDMSWindowsParity 验证 Access 2000 格式的 dms-0805.mdb
+// 全部窗体与 Windows Access COM 导出夹具保持逐字段一致。
 func TestBuildAccessJSONDMSWindowsParity(t *testing.T) {
 	testBuildAccessJSONWindowsParity(t,
 		filepath.Join("testdb", "mdbs", "dms-0805.mdb"),
-		filepath.Join("testdb", "dms", "export", "*_org.json"))
+		filepath.Join("testdb", "dms", "export-format-2000", "*_org.json"))
+}
+
+// TestBuildAccessJSONDMSAccess2003WindowsParity 验证 Access 2003 格式的
+// dms-0812.mdb 全部窗体与 Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONDMSAccess2003WindowsParity(t *testing.T) {
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "dms-0812.mdb"),
+		filepath.Join("testdb", "dms", "export-format-2003", "*_org.json"))
 }
 
 // TestBuildAccessJSONHTSUSWindowsParity 验证 HTSUS-0807.mdb 的全部窗体与
@@ -975,7 +989,7 @@ func testBuildAccessJSONWindowsParity(t *testing.T, dbPath, fixturePattern strin
 	if err != nil {
 		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
 	}
-	builder := newAccessRawJSONBuilder(entries)
+	builder := newAccessRawJSONBuilder(entries, db.Format.ObjectStorage)
 	sort.Strings(fixturePaths)
 	for _, fixturePath := range fixturePaths {
 		baseName := filepath.Base(fixturePath)

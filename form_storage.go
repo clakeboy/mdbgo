@@ -32,12 +32,13 @@ type AccessObjectEntry struct {
 
 // FormObjectStreams 是一个窗体在 Access 内部存储中的完整设计流。
 type FormObjectStreams struct {
-	FormName  string
-	StorageID int
-	Blob      []byte
-	TypeInfo  []byte
-	PropData  []byte
-	BlobDelta []byte
+	FormName      string
+	StorageID     int
+	ObjectStorage string
+	Blob          []byte
+	TypeInfo      []byte
+	PropData      []byte
+	BlobDelta     []byte
 }
 
 // ReadAccessObjectContainer 按 ID 顺序重组 MSysAccessObjects.Data。

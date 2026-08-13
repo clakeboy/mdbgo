@@ -446,7 +446,7 @@ func parseJet4ExpandedNumericSet(
 				record.compact, rectangleDefaultHeight); ok {
 				result.rectangles[name] = props
 			}
-		case 0x67:
+		case 0x6A:
 			if props, ok := parseJet4CheckBoxNumericTail(record.compact); ok {
 				result.checkBoxes[name] = props
 			}

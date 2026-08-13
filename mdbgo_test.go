@@ -110,6 +110,15 @@ func TestDatabaseFormat(t *testing.T) {
 			wantPageSize: 4096,
 			wantEngine:   "Jet 4",
 		},
+		{
+			name:         "DMS Access 2003",
+			path:         "testdb/mdbs/dms-0812.mdb",
+			wantName:     "Access 2003",
+			wantStorage:  "MSysAccessStorage",
+			wantVersion:  1,
+			wantPageSize: 4096,
+			wantEngine:   "Jet 4",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2582,7 +2591,7 @@ func TestParseJet4FormTextPropertiesSkipsBinaryCaption(t *testing.T) {
 	data = append(data, controlCaption...)
 	controls := []FormControlInfo{{Name: controlName, Type: "Label", TypeCode: 0x0C64}}
 
-	formProps, _ := parseJet4FormTextProperties(data, controls)
+	formProps, _ := parseJet4FormTextProperties(data, controls, false)
 	if got := formPropertyText(formProps, 0x0011); got != "Query Master" {
 		t.Fatalf("Caption=%q want=%q", got, "Query Master")
 	}
@@ -2817,6 +2826,16 @@ func TestNormalizeControlSourcePreservesFullNativeIdentifier(t *testing.T) {
 		if !ok || got != value {
 			t.Fatalf("normalizeControlSource(%q)=%q,%v", value, got, ok)
 		}
+	}
+}
+
+func TestParseJet4QualifiedControlSource(t *testing.T) {
+	got := parseJet4QualifiedControlSource(
+		FormControlInfo{Name: "mid_product_code", Type: "TextBox"},
+		[]jet4TaggedTextField{{Tag: 0xDD, Value: "t_pga.mid_product_code"}},
+	)
+	if value := formPropertyText(got, 0x001B); value != "t_pga.mid_product_code" {
+		t.Fatalf("Access 2003 qualified ControlSource=%q", value)
 	}
 }
 

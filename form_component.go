@@ -504,7 +504,11 @@ func parseFormBlob(data []byte) ([]FormProperty, [][]FormProperty) {
 // parseJet4FormTextProperties 解析 Jet4 MDB Blob 中按控件顺序保存的文本属性。
 // Jet4 的布局区与 ACE Blob 属性项格式不同，但控件块仍按 TypeInfo 顺序排列，
 // 每块以控件名开头，随后保存 ControlSource、Caption、Format、FontName 等文本。
-func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]FormProperty, map[string][]FormProperty) {
+func parseJet4FormTextProperties(
+	data []byte,
+	controls []FormControlInfo,
+	preserveQualifiedControlSource bool,
+) ([]FormProperty, map[string][]FormProperty) {
 	result := make(map[string][]FormProperty, len(controls))
 	if len(data) < 8 || len(controls) == 0 || le16(data) > 0x0014 {
 		return nil, result
@@ -582,6 +586,9 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 			}
 		}
 		props = mergeFormProperties(props, parseJet4ComponentTextProperties(control, fields))
+		if preserveQualifiedControlSource {
+			props = mergeFormProperties(parseJet4QualifiedControlSource(control, fields), props)
+		}
 		if control.Type == "Button" {
 			props = mergeFormProperties(props, parseJet4ButtonBinaryProperties(
 				control, jet4FormControlBlock(data, offsets, i)))
@@ -591,6 +598,35 @@ func parseJet4FormTextProperties(data []byte, controls []FormControlInfo) ([]For
 		}
 	}
 	return formProps, result
+}
+
+// parseJet4QualifiedControlSource 保留 Access 2003 紧凑窗体中显式保存的
+// 表名限定 ControlSource。Access 2000 导出会折叠同名字段的限定符，调用方
+// 必须根据数据库对象存储格式决定是否应用本规则。
+func parseJet4QualifiedControlSource(
+	control FormControlInfo,
+	fields []jet4TaggedTextField,
+) []FormProperty {
+	switch control.Type {
+	case "TextBox", "ComboBox", "CheckBox", "OptionGroup", "OptionButton":
+	default:
+		return nil
+	}
+	for _, field := range fields {
+		if field.Tag != 0xDD {
+			continue
+		}
+		value := strings.TrimSpace(field.Value)
+		if !strings.Contains(value, ".") {
+			continue
+		}
+		source, ok := normalizeASCIIFormIdentifier(value)
+		if !ok || source != value {
+			continue
+		}
+		return []FormProperty{newTextFormProperty(0x001B, source)}
+	}
+	return nil
 }
 
 func parseJet4ComponentTextProperties(control FormControlInfo, fields []jet4TaggedTextField) []FormProperty {
