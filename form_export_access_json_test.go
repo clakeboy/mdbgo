@@ -966,6 +966,14 @@ func TestBuildAccessJSONHTSUSWindowsParity(t *testing.T) {
 		filepath.Join("testdb", "HTSUS", "export", "*_org.json"))
 }
 
+// TestBuildAccessJSONIEXIC2CWindowsParity 验证 iexi-c2c.mdb 的全部窗体与
+// Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONIEXIC2CWindowsParity(t *testing.T) {
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "iexi-c2c.mdb"),
+		filepath.Join("testdb", "iexi-c2c", "export", "*_org.json"))
+}
+
 // testBuildAccessJSONWindowsParity 逐个构建指定 MDB 的窗体并与 Windows 夹具比较。
 func testBuildAccessJSONWindowsParity(t *testing.T, dbPath, fixturePattern string) {
 	t.Helper()

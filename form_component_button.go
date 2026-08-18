@@ -275,24 +275,40 @@ func parseJet4ButtonBinaryProperties(control FormControlInfo, block []byte) []Fo
 	var result []FormProperty
 	for pos := len(nameBytes); pos+2 <= len(block); {
 		tag := block[pos]
+		byteLen := int(block[pos+1])
 		if tag == 0xE3 {
 			result = mergeFormProperties(result, []FormProperty{newTextFormProperty(0x0007, "(位图)")})
-			break
+			if pos+2+byteLen > len(block) {
+				break
+			}
+			pos += 2 + byteLen
+			continue
 		}
-		byteLen := int(block[pos+1])
+		if tag == 0xED {
+			// ED 保存 Button 图标的调色板等定长二进制，Tip 可能紧随其后。
+			if pos+2+byteLen > len(block) {
+				break
+			}
+			pos += 2 + byteLen
+			continue
+		}
+		if byteLen == 16 && isJet4ControlGUIDTagForType(tag, control.Type) && pos+18 <= len(block) {
+			// 对象 GUID 是定长二进制；其内容可能恰好以 F1/长度开头，
+			// 必须整体跳过后再继续读取 GUID 之后的合法 Tip。
+			pos += 18
+			continue
+		}
 		if tag < 0xC0 || byteLen < 2 || byteLen%2 != 0 || pos+2+byteLen > len(block) {
 			break
 		}
-		if _, ok := decodeJet4UTF16Text(block[pos+2 : pos+2+byteLen]); !ok {
+		value, ok := decodeJet4UTF16Text(block[pos+2 : pos+2+byteLen])
+		if !ok {
 			break
 		}
-		pos += 2 + byteLen
-	}
-
-	for _, field := range scanJet4TaggedTextFields(block) {
-		if field.Tag == 0xF1 {
-			result = mergeFormProperties(result, []FormProperty{newTextFormProperty(0x013D, field.Value)})
+		if tag == 0xF1 {
+			result = mergeFormProperties(result, []FormProperty{newTextFormProperty(0x013D, value)})
 		}
+		pos += 2 + byteLen
 	}
 	return result
 }

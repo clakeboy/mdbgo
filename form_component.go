@@ -972,6 +972,14 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 			if !hasJet4ControlNameBoundary(data, off, len(nameBytes)) {
 				continue
 			}
+			if isFormSectionTypeCode(control.TypeCode) {
+				if isJet4SectionNameCandidate(data, off, len(nameBytes)) {
+					bestOffset = off
+					bestScore = 1
+					break
+				}
+				continue
+			}
 			fields := parseJet4TaggedTextFieldsForType(data[off:], control.Name, control.Type)
 			score := jet4TaggedTextFieldsControlTypeScore(control.Type, fields)
 			if score > bestScore {
@@ -1040,6 +1048,32 @@ func orderedFormControlOffsets(data []byte, controls []FormControlInfo) []int {
 		}
 	}
 	return offsets
+}
+
+// isJet4SectionNameCandidate 校验 Section 名称后的专用 E7 对象 GUID。
+// 普通 Label Caption 也可能恰好是 Detail/FormHeader 等分区名，但其后使用
+// Label 自己的字体和 EA GUID，不能作为物理分区边界。
+func isJet4SectionNameCandidate(data []byte, offset, nameByteLen int) bool {
+	pos := offset + nameByteLen
+	limit := pos + 256
+	if limit > len(data) {
+		limit = len(data)
+	}
+	for pos+2 <= limit {
+		tag := data[pos]
+		byteLen := int(data[pos+1])
+		if tag == 0xE7 && byteLen == 16 && pos+18 <= len(data) {
+			return true
+		}
+		if tag < 0xC0 || byteLen < 2 || byteLen%2 != 0 || pos+2+byteLen > limit {
+			return false
+		}
+		if _, ok := decodeJet4UTF16Text(data[pos+2 : pos+2+byteLen]); !ok {
+			return false
+		}
+		pos += 2 + byteLen
+	}
+	return false
 }
 
 type indexedUTF16LEToken struct {
