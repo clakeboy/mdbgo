@@ -103,8 +103,10 @@ func parseJet4FormCheckBoxProperties(data []byte, controls []FormControlInfo) ma
 
 func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, bool) {
 	result := jet4CheckBoxNumericProperties{
-		Visible:  true,
-		Geometry: formControlGeometry{Height: 240},
+		Visible: true,
+		// Jet4 会同时省略默认 Width/Height；Access 的 CheckBox
+		// 内建尺寸为 260x240 twips。
+		Geometry: formControlGeometry{Width: 260, Height: 240},
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -122,7 +124,6 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 	}
 	result.Locked = payloadPos < len(tail) && tail[payloadPos] == 0x02
 
-	foundWidth := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -138,7 +139,6 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 				result.Geometry.Top = value
 			case 0x62:
 				result.Geometry.Width = value
-				foundWidth = true
 			case 0x63:
 				result.Geometry.Height = value
 			case 0x69:
@@ -150,7 +150,7 @@ func parseJet4CheckBoxNumericTail(tail []byte) (jet4CheckBoxNumericProperties, b
 			pos++
 		}
 	}
-	if !foundWidth || result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
+	if result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||
 		result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {
 		return result, false

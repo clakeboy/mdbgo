@@ -1,6 +1,7 @@
 package mdbgo
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,10 +105,15 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 		})
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].offset < blocks[j].offset })
+	prefixEnd := len(data)
+	if len(blocks) > 0 {
+		prefixEnd = blocks[0].offset
+	}
+	defaultHeight := parseJet4TextBoxDefaultHeight(data[:prefixEnd])
 	numericByTextBox := make(map[int]jet4FormNumericProperties, len(textBoxes))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4TextBoxNumericTail(tail)
+		props, ok := parseJet4TextBoxNumericTailWithDefaultHeight(tail, defaultHeight)
 		if !ok {
 			continue
 		}
@@ -121,7 +127,11 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 		}
 	}
 	defaultView, hasDefaultView := parseJet4FormDefaultView(data)
-	applyJet4TextBoxColorDefaults(numericByTextBox, hasDefaultView && defaultView == 1)
+	usesRGBDefaults := hasDefaultView && defaultView == 1
+	if !parseJet4TextBoxTemplateHasForeColor(data[:prefixEnd]) {
+		usesRGBDefaults = usesRGBDefaults || jet4TextBoxRecordsUseRGBDefaults(numericByTextBox)
+	}
+	applyJet4TextBoxColorDefaults(numericByTextBox, usesRGBDefaults)
 
 	hasTabPages := false
 	for _, control := range controls {
@@ -157,15 +167,9 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 }
 
 // applyJet4TextBoxColorDefaults 还原窗体级 TextBox 模板省略的 ForeColor。
-// 连续窗体、Datasheet 的 0x30 项或 RGB 模板的 0x35 标志都以黑色为
-// 默认文字色；同一窗体里未显式写 0x9F 的 TextBox 继承该默认值。
+// 只有窗体本身明确使用 RGB 默认色时才传播到其他记录；单个控件的 0x30
+// 或 0x35 标志只影响自身，避免覆盖同一窗体中的系统 WindowText 默认色。
 func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties, usesRGBDefaults bool) {
-	for _, props := range records {
-		if props.usesRGBDefaults {
-			usesRGBDefaults = true
-			break
-		}
-	}
 	if !usesRGBDefaults {
 		return
 	}
@@ -176,6 +180,15 @@ func applyJet4TextBoxColorDefaults(records map[int]jet4FormNumericProperties, us
 			records[index] = props
 		}
 	}
+}
+
+func jet4TextBoxRecordsUseRGBDefaults(records map[int]jet4FormNumericProperties) bool {
+	for _, props := range records {
+		if props.usesRGBDefaults {
+			return true
+		}
+	}
+	return false
 }
 
 // hasJet4ControlTypeBetween 判断两个物理偏移之间是否存在指定类型控件。
@@ -203,6 +216,103 @@ func hasJet4FocusableControlBetween(controls []FormControlInfo, offsets []int, s
 }
 
 func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) {
+	return parseJet4TextBoxNumericTailWithDefaultHeight(tail, 288)
+}
+
+// parseJet4TextBoxDefaultHeight 读取命名控件区之前的 TextBox 模板高度。
+// 模板省略 0x63 时使用 Access 的 288-twip 内建默认值。
+func parseJet4TextBoxDefaultHeight(prefix []byte) int {
+	const builtInDefaultHeight = 288
+	signature := []byte{0xFD, 0x6D, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		for pos := recordPos + len(signature); pos < len(prefix) && pos < recordPos+96; {
+			tag := prefix[pos]
+			switch {
+			case tag < 0x30:
+				// 模板开头可带 Locked 等单字节布尔标志。
+				pos++
+			case tag >= 0x30 && tag <= 0x5F:
+				if pos+2 > len(prefix) {
+					return builtInDefaultHeight
+				}
+				pos += 2
+			case tag >= 0x60 && tag <= 0x6F:
+				if pos+3 > len(prefix) {
+					return builtInDefaultHeight
+				}
+				if tag == 0x63 {
+					height := int(le16(prefix[pos+1:]))
+					if height > 0 && height <= 32767 {
+						return height
+					}
+				}
+				pos += 3
+			case tag == 0x9C || tag == 0x9F:
+				if pos+5 > len(prefix) {
+					return builtInDefaultHeight
+				}
+				pos += 5
+			default:
+				pos = len(prefix)
+			}
+		}
+		searchPos = recordPos + len(signature)
+	}
+	return builtInDefaultHeight
+}
+
+// parseJet4TextBoxTemplateHasForeColor 判断窗体级 TextBox 模板是否显式保存
+// 0x9F ForeColor。显式系统色表示同一窗体允许系统色与 RGB 色混用，不能把
+// 某个控件的 RGB 标志传播给全部 TextBox。
+func parseJet4TextBoxTemplateHasForeColor(prefix []byte) bool {
+	signature := []byte{0xFD, 0x6D, 0x00}
+	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
+		relative := bytes.Index(prefix[searchPos:], signature)
+		if relative < 0 {
+			break
+		}
+		recordPos := searchPos + relative
+		for pos := recordPos + len(signature); pos < len(prefix) && pos < recordPos+96; {
+			tag := prefix[pos]
+			switch {
+			case tag < 0x30:
+				pos++
+			case tag >= 0x30 && tag <= 0x5F:
+				if pos+2 > len(prefix) {
+					return false
+				}
+				pos += 2
+			case tag >= 0x60 && tag <= 0x6F:
+				if pos+3 > len(prefix) {
+					return false
+				}
+				pos += 3
+			case tag == 0x9C || tag == 0x9F:
+				if pos+5 > len(prefix) {
+					return false
+				}
+				if tag == 0x9F {
+					return true
+				}
+				pos += 5
+			default:
+				pos = len(prefix)
+			}
+		}
+		searchPos = recordPos + len(signature)
+	}
+	return false
+}
+
+func parseJet4TextBoxNumericTailWithDefaultHeight(
+	tail []byte,
+	defaultHeight int,
+) (jet4FormNumericProperties, bool) {
 	result := jet4FormNumericProperties{
 		BackStyle:      1,
 		BackColor:      accessColorHex(0x00FFFFFF),
@@ -283,7 +393,7 @@ func parseJet4TextBoxNumericTail(tail []byte) (jet4FormNumericProperties, bool) 
 
 	// Access TextBox 省略与默认值相同的尺寸项。
 	result.Geometry.Width = 1440
-	result.Geometry.Height = 288
+	result.Geometry.Height = defaultHeight
 	result.HasGeometry = true
 	foundForeColor := false
 	for pos := layoutPos; pos+2 < len(tail); {

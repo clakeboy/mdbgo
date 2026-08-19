@@ -163,9 +163,9 @@ func parseJet4TabControlNumericTail(tail []byte) (jet4TabControlNumericPropertie
 			pos++
 		}
 	}
-	// 实体背景样式只在已观察到的 0x57/0x0002 组合中出现；
-	// 单独的 0x31 掩码还被多种透明 TabControl 共用。
-	if layoutMask == 0x57 && styleCode == 2 {
+	// 实体背景样式存在两组已验证编码：常规 0x57/2，以及 CAI
+	// 窗体使用的 0xF7/3。单独的 0x31 掩码仍不能确定背景样式。
+	if layoutMask == 0x57 && styleCode == 2 || layoutMask == 0xF7 && styleCode == 3 {
 		result.BackStyle = 1
 	}
 	if !foundWidth || !foundHeight ||

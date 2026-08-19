@@ -404,7 +404,7 @@ func parseJet4ExpandedNumericSet(
 
 	buttonDefaultHeight := parseJet4ButtonDefaultHeight(normalized)
 	optionButtonDefaultHeight := parseJet4OptionButtonDefaultHeight(normalized)
-	comboBoxDefaultWidth := parseJet4ComboBoxDefaultWidth(normalized)
+	comboBoxDefaultWidth, comboBoxDefaultHeight := parseJet4ComboBoxDefaults(normalized)
 	rectangleDefaultHeight := parseJet4RectangleDefaultHeight(normalized)
 	labelPrefixEnd := len(normalized)
 	for _, offset := range orderedFormControlOffsets(normalized, controls) {
@@ -412,6 +412,7 @@ func parseJet4ExpandedNumericSet(
 			labelPrefixEnd = offset
 		}
 	}
+	textBoxDefaultHeight := parseJet4TextBoxDefaultHeight(normalized[:labelPrefixEnd])
 	labelColorDefaults := parseJet4LabelColorDefaults(normalized[:labelPrefixEnd])
 	labelNames := make([]string, 0)
 	labelValues := make(map[int]jet4LabelNumericProperties)
@@ -467,13 +468,14 @@ func parseJet4ExpandedNumericSet(
 				result.optionGroups[name] = props
 			}
 		case 0x6D:
-			if props, ok := parseJet4TextBoxNumericTail(record.compact); ok {
+			if props, ok := parseJet4TextBoxNumericTailWithDefaultHeight(
+				record.compact, textBoxDefaultHeight); ok {
 				textBoxValues[len(textBoxNames)] = props
 				textBoxNames = append(textBoxNames, name)
 			}
 		case 0x6F:
-			if props, ok := parseJet4ComboBoxNumericTailWithDefaultWidth(
-				record.compact, comboBoxDefaultWidth); ok {
+			if props, ok := parseJet4ComboBoxNumericTailWithDefaults(
+				record.compact, comboBoxDefaultWidth, comboBoxDefaultHeight); ok {
 				result.comboBoxes[name] = props
 			}
 		case 0x70:
@@ -503,7 +505,11 @@ func parseJet4ExpandedNumericSet(
 		result.labels[name] = labelValues[index]
 	}
 	defaultView, hasDefaultView := parseJet4FormDefaultView(normalized)
-	applyJet4TextBoxColorDefaults(textBoxValues, hasDefaultView && defaultView == 1)
+	usesRGBDefaults := hasDefaultView && defaultView == 1
+	if !parseJet4TextBoxTemplateHasForeColor(normalized[:labelPrefixEnd]) {
+		usesRGBDefaults = usesRGBDefaults || jet4TextBoxRecordsUseRGBDefaults(textBoxValues)
+	}
+	applyJet4TextBoxColorDefaults(textBoxValues, usesRGBDefaults)
 	for index, name := range textBoxNames {
 		result.textBoxes[name] = textBoxValues[index]
 	}

@@ -655,10 +655,39 @@ func controlsInBlobOrder(controls []FormControlContent) []FormControlContent {
 		}
 	}
 	ordered := append([]FormControlContent(nil), controls...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return ordered[i].BlobOffset < ordered[j].BlobOffset
-	})
+	if formContentTypeInfoTabOrderIsComplete(ordered) {
+		// 完整连续的 TypeInfo 索引直接表达 TabPage 与子控件层级；某些
+		// 窗体会把后一页的定义块提前保存，单靠 Blob 偏移会错误移页。
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+	} else {
+		sort.SliceStable(ordered, func(i, j int) bool {
+			return ordered[i].BlobOffset < ordered[j].BlobOffset
+		})
+	}
 	return ordered
+}
+
+func formContentTypeInfoTabOrderIsComplete(controls []FormControlContent) bool {
+	pageCount := 0
+	var minIndex uint32
+	var maxIndex uint32
+	seen := make(map[uint32]bool, len(controls))
+	for position, control := range controls {
+		if control.Type == "TabPage" {
+			pageCount++
+		}
+		if seen[control.Index] {
+			return false
+		}
+		seen[control.Index] = true
+		if position == 0 || control.Index < minIndex {
+			minIndex = control.Index
+		}
+		if position == 0 || control.Index > maxIndex {
+			maxIndex = control.Index
+		}
+	}
+	return pageCount >= 2 && len(controls) > 0 && maxIndex-minIndex+1 == uint32(len(controls))
 }
 
 func (builder *accessRawJSONBuilder) convertControl(control FormControlContent) (accessRawJSONControl, error) {
@@ -974,6 +1003,14 @@ func TestBuildAccessJSONIEXIC2CWindowsParity(t *testing.T) {
 		filepath.Join("testdb", "iexi-c2c", "export", "*_org.json"))
 }
 
+// TestBuildAccessJSONCAIWindowsParity 验证 cai-0819.mdb 的全部窗体与
+// Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONCAIWindowsParity(t *testing.T) {
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "cai-0819.mdb"),
+		filepath.Join("testdb", "cai", "export", "*_org.json"))
+}
+
 // testBuildAccessJSONWindowsParity 逐个构建指定 MDB 的窗体并与 Windows 夹具比较。
 func testBuildAccessJSONWindowsParity(t *testing.T, dbPath, fixturePattern string) {
 	t.Helper()
@@ -1093,6 +1130,26 @@ func TestBuildControlSequenceKeepsControlsAboveTabFrameAtRoot(t *testing.T) {
 	if len(got[0].Tabs) != 2 || len(got[0].Tabs[0].Controls) != 1 ||
 		len(got[0].Tabs[1].Controls) != 1 || got[0].Tabs[1].Controls[0].Name != "page2_field" {
 		t.Fatalf("tab controls=%+v", got[0])
+	}
+}
+
+func TestBuildControlSequenceUsesCompleteTypeInfoTabOrder(t *testing.T) {
+	controls := []FormControlContent{
+		{Name: "tabs", Type: "TabControl", Index: 10, BlobOffset: 100},
+		{Name: "page1", Type: "TabPage", Index: 11, BlobOffset: 200},
+		{Name: "page1_first", Type: "TextBox", Index: 12, BlobOffset: 300},
+		{Name: "page1_late", Type: "TextBox", Index: 13, BlobOffset: 500},
+		{Name: "page2", Type: "TabPage", Index: 14, BlobOffset: 400},
+		{Name: "page2_first", Type: "TextBox", Index: 15, BlobOffset: 600},
+	}
+	got, err := (&accessRawJSONBuilder{}).buildControlSequence(controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Tabs) != 2 ||
+		len(got[0].Tabs[0].Controls) != 2 || got[0].Tabs[0].Controls[1].Name != "page1_late" ||
+		len(got[0].Tabs[1].Controls) != 1 || got[0].Tabs[1].Controls[0].Name != "page2_first" {
+		t.Fatalf("连续 TypeInfo 页顺序未被保留: %+v", got)
 	}
 }
 

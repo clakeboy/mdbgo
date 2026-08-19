@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const jet4ComboBoxBuiltInDefaultWidth = 1440
+const (
+	jet4ComboBoxBuiltInDefaultWidth  = 1440
+	jet4ComboBoxBuiltInDefaultHeight = 240
+)
 
 func parseJet4ComboBoxTextProperties(control FormControlInfo, fields []jet4TaggedTextField) []FormProperty {
 	var props []FormProperty
@@ -120,11 +123,11 @@ func parseJet4FormComboBoxProperties(data []byte, controls []FormControlInfo) ma
 	if len(blocks) > 0 {
 		prefixEnd = blocks[0].offset
 	}
-	defaultWidth := parseJet4ComboBoxDefaultWidth(data[:prefixEnd])
+	defaultWidth, defaultHeight := parseJet4ComboBoxDefaults(data[:prefixEnd])
 	numericRecords := make([]jet4ComboBoxNumericProperties, 0, len(comboBoxes))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4ComboBoxNumericTailWithDefaultWidth(tail, defaultWidth)
+		props, ok := parseJet4ComboBoxNumericTailWithDefaults(tail, defaultWidth, defaultHeight)
 		if ok {
 			numericRecords = append(numericRecords, props)
 		}
@@ -139,6 +142,13 @@ func parseJet4FormComboBoxProperties(data []byte, controls []FormControlInfo) ma
 // 模板以 FD 6F 00 开始；若模板省略 0x65 Width，则使用 Access 内建的
 // 1440-twip 默认宽度。
 func parseJet4ComboBoxDefaultWidth(prefix []byte) int {
+	width, _ := parseJet4ComboBoxDefaults(prefix)
+	return width
+}
+
+// parseJet4ComboBoxDefaults 读取窗体级 ComboBox 模板中的默认尺寸。
+// 0x65/0x66 分别保存 Width/Height；控件记录可省略任一默认值。
+func parseJet4ComboBoxDefaults(prefix []byte) (int, int) {
 	signature := []byte{0xFD, 0x6F, 0x00}
 	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
 		relative := bytes.Index(prefix[searchPos:], signature)
@@ -147,6 +157,7 @@ func parseJet4ComboBoxDefaultWidth(prefix []byte) int {
 		}
 		recordPos := searchPos + relative
 		width := jet4ComboBoxBuiltInDefaultWidth
+		height := jet4ComboBoxBuiltInDefaultHeight
 		for pos := recordPos + len(signature); pos < len(prefix) && pos < recordPos+96; {
 			tag := prefix[pos]
 			switch tag {
@@ -166,6 +177,11 @@ func parseJet4ComboBoxDefaultWidth(prefix []byte) int {
 					if value > 0 && value <= 32767 {
 						width = value
 					}
+				} else if tag == 0x66 {
+					value := int(le16(prefix[pos+1:]))
+					if value > 0 && value <= 32767 {
+						height = value
+					}
 				}
 				pos += 3
 			case 0x9C, 0x9D, 0xA0:
@@ -178,9 +194,9 @@ func parseJet4ComboBoxDefaultWidth(prefix []byte) int {
 				pos = len(prefix)
 			}
 		}
-		return width
+		return width, height
 	}
-	return jet4ComboBoxBuiltInDefaultWidth
+	return jet4ComboBoxBuiltInDefaultWidth, jet4ComboBoxBuiltInDefaultHeight
 }
 
 func parseJet4ComboBoxNumericTail(tail []byte) (jet4ComboBoxNumericProperties, bool) {
@@ -191,12 +207,19 @@ func parseJet4ComboBoxNumericTailWithDefaultWidth(
 	tail []byte,
 	defaultWidth int,
 ) (jet4ComboBoxNumericProperties, bool) {
+	return parseJet4ComboBoxNumericTailWithDefaults(tail, defaultWidth, 0)
+}
+
+func parseJet4ComboBoxNumericTailWithDefaults(
+	tail []byte,
+	defaultWidth, defaultHeight int,
+) (jet4ComboBoxNumericProperties, bool) {
 	result := jet4ComboBoxNumericProperties{
 		ListRows:    8,
 		BoundColumn: 1,
 		BackStyle:   1,
 		Visible:     true,
-		Geometry:    formControlGeometry{Width: defaultWidth},
+		Geometry:    formControlGeometry{Width: defaultWidth, Height: defaultHeight},
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -222,7 +245,8 @@ func parseJet4ComboBoxNumericTailWithDefaultWidth(
 	}
 	// Locked 是记录前缀开头的独立 0x04 标志。不能扫描整个前缀，
 	// 否则布局标签的值字节等于 0x04 时也会被误判为只读。
-	result.Locked = payloadPos < layoutPos && tail[payloadPos] == 0x04
+	result.Locked = payloadPos < layoutPos && (tail[payloadPos] == 0x04 ||
+		(payloadPos+1 < layoutPos && tail[payloadPos] == 0x01 && tail[payloadPos+1] == 0x04))
 	for pos := payloadPos; pos < layoutPos; {
 		if tail[pos] < 0x30 || pos+1 >= layoutPos {
 			pos++
@@ -236,7 +260,7 @@ func parseJet4ComboBoxNumericTailWithDefaultWidth(
 	}
 
 	foundWidth := defaultWidth > 0
-	foundHeight := false
+	foundHeight := defaultHeight > 0
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {

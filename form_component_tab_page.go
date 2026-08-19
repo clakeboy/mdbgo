@@ -13,7 +13,9 @@ func parseJet4TabPageTextProperties(_ FormControlInfo, fields []jet4TaggedTextFi
 		case 0xE3:
 			props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x0016, field.Value)})
 		case 0xE8:
-			props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x0011, field.Value)})
+			if !isKnownFormFont(strings.TrimSpace(field.Value)) {
+				props = mergeFormProperties(props, []FormProperty{newTextFormProperty(0x0011, field.Value)})
+			}
 		}
 	}
 	return props

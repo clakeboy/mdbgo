@@ -1360,6 +1360,36 @@ func TestParseJet4TextBoxNumericTailSignedPosition(t *testing.T) {
 	}
 }
 
+func TestApplyJet4TextBoxColorDefaultsKeepsMixedControlDefaults(t *testing.T) {
+	records := map[int]jet4FormNumericProperties{
+		0: {ForeColorValue: 0x80000008, usesRGBDefaults: false},
+		1: {ForeColorValue: 0, usesRGBDefaults: true},
+	}
+	applyJet4TextBoxColorDefaults(records, false)
+	if records[0].ForeColorValue != 0x80000008 || records[1].ForeColorValue != 0 {
+		t.Fatalf("混合 TextBox 默认色被错误传播: %+v", records)
+	}
+}
+
+func TestParseJet4TextBoxDefaultHeight(t *testing.T) {
+	prefix := []byte{
+		0x13, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0xFD, 0x6D, 0x00, 0x11, 0x34, 0x02,
+		0x63, 0x0E, 0x01,
+		0x9C, 0x05, 0x00, 0x00, 0x80,
+		0x9F, 0x08, 0x00, 0x00, 0x80,
+	}
+	if got := parseJet4TextBoxDefaultHeight(prefix); got != 270 {
+		t.Fatalf("TextBox 模板默认高度=%d want=270", got)
+	}
+	if !parseJet4TextBoxTemplateHasForeColor(prefix) {
+		t.Fatal("TextBox 模板中的显式 ForeColor 未被识别")
+	}
+	if parseJet4TextBoxTemplateHasForeColor(prefix[:len(prefix)-5]) {
+		t.Fatal("未保存 ForeColor 的 TextBox 模板被误判为显式颜色")
+	}
+}
+
 func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 	tail := []byte{
 		0xFD, 0x6F, 0x00, 0x01, 0x32, 0x00, 0x35, 0x55, 0x44, 0x03,
@@ -1467,6 +1497,22 @@ func TestParseJet4ComboBoxNumericTail(t *testing.T) {
 		got.BoundColumn != 1 || got.BackStyle != 1 || got.TabIndex != 6 || !got.HasTabIndex ||
 		got.Geometry != (formControlGeometry{Left: 5280, Top: 960, Width: 1560, Height: 300}) {
 		t.Fatalf("GUID-tail ComboBox numeric properties=%+v ok=%v", got, ok)
+	}
+
+	omittedHeightTail := []byte{
+		0xFD, 0x6F, 0x00, 0x01, 0x04, 0x39, 0x02,
+		0x62, 0xA5, 0x06,
+		0x63, 0x0D, 0x11,
+		0x64, 0x0C, 0x03,
+		0x65, 0x63, 0x06,
+		0x6C, 0x0A, 0x00,
+		0x6E, 0x05, 0x00,
+		0xDC, 0x28,
+	}
+	got, ok = parseJet4ComboBoxNumericTailWithDefaults(omittedHeightTail, 1440, 270)
+	if !ok || !got.Locked || got.TextAlign != 2 ||
+		got.Geometry != (formControlGeometry{Left: 4365, Top: 780, Width: 1635, Height: 270}) {
+		t.Fatalf("省略模板高度的 ComboBox properties=%+v ok=%v", got, ok)
 	}
 }
 
@@ -1728,6 +1774,18 @@ func TestParseJet4CheckBoxNumericTail(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("default-height CheckBox numeric properties=%+v want=%+v", got, want)
+	}
+
+	omittedSizeTail := []byte{
+		0xFD, 0x6A, 0x00, 0x32, 0xDF,
+		0x60, 0x64, 0x23,
+		0x61, 0xD8, 0x09,
+		0x69, 0x09, 0x00,
+		0xDC, 0x14,
+	}
+	got, ok = parseJet4CheckBoxNumericTail(omittedSizeTail)
+	if !ok || got.Geometry != (formControlGeometry{Left: 9060, Top: 2520, Width: 260, Height: 240}) {
+		t.Fatalf("省略默认尺寸的 CheckBox properties=%+v ok=%v", got, ok)
 	}
 
 	sectionBoundaryTail := []byte{
@@ -2224,6 +2282,22 @@ func TestParseJet4TabControlNumericTail(t *testing.T) {
 			want: jet4TabControlNumericProperties{
 				BackStyle: 1, FontSize: 8, FontWeight: 400, Visible: true,
 				Geometry: formControlGeometry{Top: 420, Width: 13380, Height: 8760}, HasGeometry: true,
+			},
+		},
+		{
+			name: "CAI solid background style",
+			tail: []byte{
+				0xFD, 0x7B, 0x00,
+				0x31, 0xF7,
+				0x61, 0x2C, 0x01,
+				0x62, 0xA0, 0x32,
+				0x63, 0xFC, 0x21,
+				0x66, 0x03, 0x00,
+				0xDC, 0x12,
+			},
+			want: jet4TabControlNumericProperties{
+				BackStyle: 1, FontSize: 8, FontWeight: 400, Visible: true,
+				Geometry: formControlGeometry{Top: 300, Width: 12960, Height: 8700}, HasGeometry: true,
 			},
 		},
 	}

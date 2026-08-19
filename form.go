@@ -650,6 +650,10 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 				parsed.Caption = caption
 			}
 		}
+		if parsed.Caption == "" && (control.Type == "Label" || control.Type == "TabPage") {
+			// Access 在 Label/TabPage 未持久化 Caption 时返回控件 Name。
+			parsed.Caption = control.Name
+		}
 		parsed.ControlSource = formPropertyText(parsed.Properties, 0x001B)
 		parsed.SourceObject = formPropertyText(parsed.Properties, 0x0084)
 		parsed.LinkChildFields = formPropertyText(parsed.Properties, 0x0031)
@@ -752,7 +756,13 @@ func normalizeJet4TabIndexes(
 			indices = append(indices, i)
 		}
 	}
-	sort.Slice(indices, func(i, j int) bool { return offsets[indices[i]] < offsets[indices[j]] })
+	if jet4TypeInfoTabOrderIsComplete(controls, indices) {
+		sort.Slice(indices, func(i, j int) bool {
+			return controls[indices[i]].Index < controls[indices[j]].Index
+		})
+	} else {
+		sort.Slice(indices, func(i, j int) bool { return offsets[indices[i]] < offsets[indices[j]] })
+	}
 
 	activePage := false
 	lastPage := false
@@ -858,6 +868,32 @@ func normalizeJet4TabIndexes(
 			nextIndex++
 		}
 	}
+}
+
+// jet4TypeInfoTabOrderIsComplete 判断 TypeInfo 是否包含可直接恢复 Tab 页层级的
+// 连续控件索引。索引有缺口表示存在后追加或隐藏目录项，此时仍应使用 Blob 物理顺序。
+func jet4TypeInfoTabOrderIsComplete(controls []FormControlInfo, indices []int) bool {
+	pageCount := 0
+	var minIndex uint32
+	var maxIndex uint32
+	seen := make(map[uint32]bool, len(indices))
+	for position, controlIndex := range indices {
+		control := controls[controlIndex]
+		if control.Type == "TabPage" {
+			pageCount++
+		}
+		if seen[control.Index] {
+			return false
+		}
+		seen[control.Index] = true
+		if position == 0 || control.Index < minIndex {
+			minIndex = control.Index
+		}
+		if position == 0 || control.Index > maxIndex {
+			maxIndex = control.Index
+		}
+	}
+	return pageCount >= 2 && len(indices) > 0 && maxIndex-minIndex+1 == uint32(len(indices))
 }
 
 // jet4FocusableControlTop 返回可聚焦控件的设计 Top，用于识别最后一页之后的根控件。
