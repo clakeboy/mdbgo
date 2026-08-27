@@ -188,7 +188,7 @@ go test -run TestExportFormAsAccessJSON -v -count=1
 `TestExportAllFormsAsAccessJSON` 批量导出指定 MDB 的全部窗体到目录，每个窗体输出一个 `<窗体名>.json` 文件，文件内容格式与 `TestExportFormAsAccessJSON` 一致：
 
 ```bash
-MDBGO_TEST_DB=testdb/mdbs/cai-0819.mdb \
+MDBGO_TEST_DB=testdb/mdbs/cai-0824.mdb \
 MDBGO_EXPORT_FORMS_DIR=testdb/cai/mdbgo \
 go test -run TestExportAllFormsAsAccessJSON -v -count=1
 ```

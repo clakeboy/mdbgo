@@ -2407,6 +2407,45 @@ func TestParseJet4TabPageNumericTail(t *testing.T) {
 	}
 }
 
+func TestParseJet4NestedTabPageCaption(t *testing.T) {
+	tail := []byte{0xFD, 0x7C, 0x00, 0x60, 0x62, 0x00, 0x61, 0x86, 0x01,
+		0x62, 0x39, 0x2D, 0x63, 0xE8, 0x1A, 0xDC, 0x0A}
+	if got := jet4TabPageNumericRecordPosition(tail); got != 0 {
+		t.Fatalf("TabPage record offset=%d want=0", got)
+	}
+	tail = append(tail, encodeUTF16LE("Other")...)
+	caption := encodeUTF16LE("Email Body")
+	tail = append(tail, 0xE8, byte(len(caption)))
+	tail = append(tail, caption...)
+	tail = append(tail, 0xEA, 0x10)
+	tail = append(tail, make([]byte, 16)...)
+	if got := parseJet4NestedTabPageCaption(tail, "Other"); got != "Email Body" {
+		t.Fatalf("TabPage Caption=%q want=%q", got, "Email Body")
+	}
+}
+
+func TestParseJet4TextBoxNumericTailAfterTabPageRecord(t *testing.T) {
+	tail := []byte{0xFD, 0x7C, 0x00, 0x60, 0x62, 0x00, 0x61, 0x86, 0x01,
+		0x62, 0x39, 0x2D, 0x63, 0xE8, 0x1A, 0xDC, 0x0A,
+		0xFE, 0x6D, 0x00, 0x32, 0x02, 0x60, 0x2C, 0x01, 0x61, 0xFC, 0x03,
+		0x62, 0x18, 0x24, 0x63, 0x94, 0x11, 0xDC, 0x14}
+	got, ok := parseJet4TextBoxNumericTailAnywhereWithDefaultHeight(tail, 288)
+	if !ok {
+		t.Fatal("复合块中的 TextBox 数值记录未被识别")
+	}
+	want := formControlGeometry{Left: 300, Top: 1020, Width: 9240, Height: 4500}
+	if got.Geometry != want {
+		t.Fatalf("TextBox geometry=%+v want=%+v", got.Geometry, want)
+	}
+}
+
+func TestJet4ControlNameAtPreservesBlobCase(t *testing.T) {
+	data := append([]byte{0x00, 0x00}, encodeUTF16LE("Cai")...)
+	if got := jet4ControlNameAt(data, 2, "CAI"); got != "Cai" {
+		t.Fatalf("control name=%q want=%q", got, "Cai")
+	}
+}
+
 func TestParseJet4RectangleDefaultHeight(t *testing.T) {
 	tests := []struct {
 		name   string

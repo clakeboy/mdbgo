@@ -490,31 +490,27 @@ func UUIDToStringFmt(buf []byte, pos int, format MdbUuidFormat) string {
 		buf[pos+14], buf[pos+15])
 }
 
+// MemoToString 从当前记录的 Memo 头读取完整长值，并保持原始字节格式供上层统一解码。
+// Access Memo 可能内联在当前记录中，也可能存放在单页或多页长值链中；三种形式统一
+// 交给 ReadOleFullData 处理，避免普通表扫描只能读取短 Memo、长 Memo 变成空字符串。
 func (mdb *MdbHandle) MemoToString(start int, size int) string {
-	if size < MDBMemoOverhead {
+	if size < MDBMemoOverhead || start < 0 || start+MDBMemoOverhead > len(mdb.PgBuf) {
 		return ""
 	}
-	pgBuf := mdb.PgBuf[:]
-	memoLen := GetInt32(pgBuf, start)
-	if memoLen&0x80000000 != 0 {
-		end := start + MDBMemoOverhead + (size - MDBMemoOverhead)
-		if end > len(pgBuf) {
-			end = len(pgBuf)
-		}
-		return string(pgBuf[start+MDBMemoOverhead : end])
-	} else if memoLen&0x40000000 != 0 {
-		pgRow := GetInt32(pgBuf, start+4)
-		buf, rowStart, err := mdb.FindPgRow(pgRow)
-		if err != nil {
-			return ""
-		}
-		end := rowStart + size
-		if end > len(buf) {
-			end = len(buf)
-		}
-		return string(buf[rowStart:end])
+
+	// ReadOleFullData 必须读取未经格式化的 12 字节 Memo 头，不能复用最终字符串缓冲区。
+	header := make([]byte, MDBMemoOverhead)
+	copy(header, mdb.PgBuf[start:start+MDBMemoOverhead])
+	column := &MdbColumn{
+		CurValueStart: start,
+		CurValueLen:   size,
+		BindPtr:       header,
 	}
-	return ""
+	data, err := mdb.ReadOleFullData(column)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func ColDispSize(col *MdbColumn) int {

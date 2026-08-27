@@ -22,17 +22,24 @@ func parseJet4TabPageTextProperties(_ FormControlInfo, fields []jet4TaggedTextFi
 }
 
 type jet4TabPageNumericProperties struct {
-	PageIndex   int
-	Visible     bool
-	Geometry    formControlGeometry
-	HasGeometry bool
+	PageIndex       int
+	Visible         bool
+	Geometry        formControlGeometry
+	HasGeometry     bool
+	Caption         string
+	RecordOffset    int
+	HasRecordOffset bool
 }
 
 func (props jet4TabPageNumericProperties) formProperties() []FormProperty {
-	return []FormProperty{
+	result := []FormProperty{
 		{ID: 0x0160, Name: FormPropertyIDToName(0x0160), ValueType: "Short", Value: strconv.Itoa(props.PageIndex)},
 		{ID: 0x0094, Name: FormPropertyIDToName(0x0094), ValueType: "Bool", Value: strconv.FormatBool(props.Visible)},
 	}
+	if props.Caption != "" {
+		result = append(result, newTextFormProperty(0x0011, props.Caption))
+	}
+	return result
 }
 
 // parseJet4FormTabPageProperties 按物理顺序把 0x7C Page 数值记录配回 TabPage。
@@ -93,6 +100,14 @@ func parseJet4FormTabPageProperties(
 		}
 		props, ok := parseJet4TabPageNumericTail(tail)
 		if ok {
+			if recordPos := jet4TabPageNumericRecordPosition(tail); recordPos >= 0 {
+				props.RecordOffset = block.offset + len(block.block) - len(tail) + recordPos
+				props.HasRecordOffset = true
+			}
+			if len(numericRecords) < len(tabPages) {
+				props.Caption = parseJet4NestedTabPageCaption(
+					tail, tabPages[len(numericRecords)].name)
+			}
 			hasTabTop := false
 			if len(numericRecords) < len(tabPages) {
 				_, hasTabTop = jet4TabControlTopBeforePage(
@@ -123,6 +138,31 @@ func parseJet4FormTabPageProperties(
 		result[strings.ToLower(tabPages[i].name)] = props
 	}
 	return result
+}
+
+// parseJet4NestedTabPageCaption 读取嵌在前一控件块尾部的 TabPage Caption。
+// Jet4 可能把 Page 的数值记录、名称和 Caption 连续写入同一个复合块，
+// 而 Page 自己的名称块只保留字体信息。
+func parseJet4NestedTabPageCaption(tail []byte, pageName string) string {
+	offsets := indexUTF16LETokenOffsets(tail, []string{pageName})
+	if len(offsets) == 0 {
+		return ""
+	}
+	nameBytes := encodeUTF16LE(pageName)
+	for _, offset := range offsets[0] {
+		if !hasJet4ControlNameBoundary(tail, offset, len(nameBytes)) {
+			continue
+		}
+		fields := parseJet4TaggedTextFieldsForType(tail[offset:], pageName, "TabPage")
+		caption := formPropertyText(
+			parseJet4TabPageTextProperties(FormControlInfo{Name: pageName, Type: "TabPage"}, fields),
+			0x0011,
+		)
+		if caption != "" {
+			return caption
+		}
+	}
+	return ""
 }
 
 // jet4TabControlTopBeforePage 返回当前 Page 所属的最近前置 TabControl.Top。
@@ -157,6 +197,25 @@ func jet4TabPageBoundaryMask(tail []byte) (byte, bool) {
 	return tail[1], true
 }
 
+// jet4TabPageNumericRecordPosition 返回复合块尾部中 0x007C Page 数值记录的
+// 起点。Page 的名称文本块可能提前保存，层级重建应使用这条结构化记录的位置。
+func jet4TabPageNumericRecordPosition(tail []byte) int {
+	for pos := 0; pos+3 <= len(tail); pos++ {
+		if (tail[pos] == 0xFD || tail[pos] == 0xFE) && tail[pos+1] == 0x7C && tail[pos+2] == 0x00 {
+			return pos
+		}
+		if tail[pos] != 0xFF {
+			continue
+		}
+		for markerPos := pos + 1; markerPos+2 <= len(tail) && markerPos < pos+8; markerPos++ {
+			if tail[markerPos] == 0x7C && tail[markerPos+1] == 0x00 {
+				return pos
+			}
+		}
+	}
+	return -1
+}
+
 func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, bool) {
 	result := jet4TabPageNumericProperties{Visible: true}
 	if len(tail) < 12 {
@@ -164,17 +223,16 @@ func parseJet4TabPageNumericTail(tail []byte) (jet4TabPageNumericProperties, boo
 	}
 
 	payloadPos := -1
-	for pos := 0; pos+3 <= len(tail) && pos < 12; pos++ {
-		if (tail[pos] == 0xFD || tail[pos] == 0xFE) && tail[pos+1] == 0x7C && tail[pos+2] == 0x00 {
-			payloadPos = pos + 3
-			break
-		}
-	}
-	if payloadPos < 0 && tail[0] == 0xFF {
-		for pos := 1; pos+2 <= len(tail) && pos < 8; pos++ {
-			if tail[pos] == 0x7C && tail[pos+1] == 0x00 {
-				payloadPos = pos + 2
-				break
+	recordPos := jet4TabPageNumericRecordPosition(tail)
+	if recordPos >= 0 && recordPos < 12 {
+		if tail[recordPos] == 0xFD || tail[recordPos] == 0xFE {
+			payloadPos = recordPos + 3
+		} else {
+			for pos := recordPos + 1; pos+2 <= len(tail) && pos < recordPos+8; pos++ {
+				if tail[pos] == 0x7C && tail[pos+1] == 0x00 {
+					payloadPos = pos + 2
+					break
+				}
 			}
 		}
 	}

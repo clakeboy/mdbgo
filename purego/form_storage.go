@@ -69,20 +69,18 @@ func (mdb *MDB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 
 	compoundMagic := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
 	result := &AccessObjectContainer{FirstObjectID: -1, LastObjectID: -1}
-	started := false
+	startIndex, startOffset := accessObjectContainerStart(objects, compoundMagic)
+	if startIndex < 0 {
+		return nil, fmt.Errorf("MSysAccessObjects 中没有 OLE Compound 容器")
+	}
 
-	for _, obj := range objects {
+	for i, obj := range objects[startIndex:] {
 		if len(obj.Data) == 0 {
 			continue
 		}
-		if !started {
-			off := bytes.Index(obj.Data, compoundMagic)
-			if off < 0 {
-				continue
-			}
-			started = true
+		if i == 0 {
 			result.FirstObjectID = obj.ObjectID
-			result.Data = append(result.Data, obj.Data[off:]...)
+			result.Data = append(result.Data, obj.Data[startOffset:]...)
 		} else {
 			result.Data = append(result.Data, obj.Data...)
 		}
@@ -93,6 +91,27 @@ func (mdb *MDB) ReadAccessObjectContainer() (*AccessObjectContainer, error) {
 		return nil, fmt.Errorf("MSysAccessObjects 中没有 OLE Compound 容器")
 	}
 	return result, nil
+}
+
+// accessObjectContainerStart 定位 Access Forms 主 OLE Compound 容器的起始分片和偏移。
+//
+// Access 数据库的较早记录中可能包含内嵌 CFB 对象，不能把分片中任意位置出现的
+// CFB 签名直接当成主容器。主容器通常从一个分片的首字节开始，因此优先选择这种
+// 边界；仅在旧数据库没有首字节签名时，才兼容原有的分片内部签名布局。
+func accessObjectContainerStart(objects []*AccessObjectData, compoundMagic []byte) (int, int) {
+	for i, obj := range objects {
+		if bytes.HasPrefix(obj.Data, compoundMagic) {
+			return i, 0
+		}
+	}
+
+	for i, obj := range objects {
+		if offset := bytes.Index(obj.Data, compoundMagic); offset >= 0 {
+			return i, offset
+		}
+	}
+
+	return -1, -1
 }
 
 // ReadAccessObjectEntries 读取 Access 内部对象存储的全部目录和流。

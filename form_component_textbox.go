@@ -113,7 +113,7 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 	numericByTextBox := make(map[int]jet4FormNumericProperties, len(textBoxes))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4TextBoxNumericTailWithDefaultHeight(tail, defaultHeight)
+		props, ok := parseJet4TextBoxNumericTailAnywhereWithDefaultHeight(tail, defaultHeight)
 		if !ok {
 			continue
 		}
@@ -164,6 +164,24 @@ func parseJet4FormNumericProperties(data []byte, controls []FormControlInfo) map
 		previousOffset = textBoxes[i].offset
 	}
 	return result
+}
+
+// parseJet4TextBoxNumericTailAnywhereWithDefaultHeight 在复合块中寻找 TextBox
+// 数值记录。前一控件块可能先保存 TabPage 记录和 Caption，再保存下一个
+// TextBox 的 0x006D 记录，不能只检查块尾开头的第一条记录。
+func parseJet4TextBoxNumericTailAnywhereWithDefaultHeight(
+	tail []byte,
+	defaultHeight int,
+) (jet4FormNumericProperties, bool) {
+	for pos := 0; pos < len(tail); pos++ {
+		if tail[pos] != 0xFD && tail[pos] != 0xFE && tail[pos] != 0xFF {
+			continue
+		}
+		if props, ok := parseJet4TextBoxNumericTailWithDefaultHeight(tail[pos:], defaultHeight); ok {
+			return props, true
+		}
+	}
+	return jet4FormNumericProperties{}, false
 }
 
 // applyJet4TextBoxColorDefaults 还原窗体级 TextBox 模板省略的 ForeColor。

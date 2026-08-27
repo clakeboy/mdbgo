@@ -1003,11 +1003,11 @@ func TestBuildAccessJSONIEXIC2CWindowsParity(t *testing.T) {
 		filepath.Join("testdb", "iexi-c2c", "export", "*_org.json"))
 }
 
-// TestBuildAccessJSONCAIWindowsParity 验证 cai-0819.mdb 的全部窗体与
+// TestBuildAccessJSONCAIWindowsParity 验证 cai-0824.mdb 的全部窗体与
 // Windows Access COM 导出夹具保持逐字段一致。
 func TestBuildAccessJSONCAIWindowsParity(t *testing.T) {
 	testBuildAccessJSONWindowsParity(t,
-		filepath.Join("testdb", "mdbs", "cai-0819.mdb"),
+		filepath.Join("testdb", "mdbs", "cai-0824.mdb"),
 		filepath.Join("testdb", "cai", "export", "*_org.json"))
 }
 

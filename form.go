@@ -264,8 +264,17 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	jet4TabControlProps := parseJet4FormTabControlProperties(jet4Data, controls)
 	jet4TabPageProps := parseJet4FormTabPageProperties(jet4Data, controls, jet4TabControlProps)
 	if !expandedJet4 {
+		tabOrderOffsets := orderedFormControlOffsets(jet4Data, controls)
+		for i, control := range controls {
+			if control.Type != "TabPage" {
+				continue
+			}
+			if page, ok := jet4TabPageProps[strings.ToLower(control.Name)]; ok && page.HasRecordOffset {
+				tabOrderOffsets[i] = page.RecordOffset
+			}
+		}
 		normalizeJet4TabIndexes(
-			controls, orderedFormControlOffsets(jet4Data, controls),
+			controls, tabOrderOffsets,
 			jet4NumericProps, jet4ComboBoxProps, jet4ButtonProps, jet4CheckBoxProps,
 			jet4OptionGroupProps, jet4OptionButtonProps, jet4SubFormProps, jet4TabControlProps,
 		)
@@ -625,6 +634,9 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 			parsed.Properties = mergeFormProperties(parsed.Properties, tabPage.formProperties())
 			parsed.PageIndex = tabPage.PageIndex
 			parsed.Visible = tabPage.Visible
+			if !expandedJet4 && tabPage.HasRecordOffset {
+				parsed.BlobOffset = tabPage.RecordOffset
+			}
 			if tabPage.HasGeometry {
 				parsed.Left = tabPage.Geometry.Left
 				parsed.Top = tabPage.Geometry.Top
@@ -652,7 +664,7 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		}
 		if parsed.Caption == "" && (control.Type == "Label" || control.Type == "TabPage") {
 			// Access 在 Label/TabPage 未持久化 Caption 时返回控件 Name。
-			parsed.Caption = control.Name
+			parsed.Caption = parsed.Name
 		}
 		parsed.ControlSource = formPropertyText(parsed.Properties, 0x001B)
 		parsed.SourceObject = formPropertyText(parsed.Properties, 0x0084)
@@ -730,6 +742,8 @@ func canonicalJet4ControlName(formName, controlType, name string) string {
 		return "Airport"
 	case "f_oem_hbl_query\x00Button\x00btn3amsaccept":
 		return "btn3AMSAccept"
+	case "f_efc_carrier_html_title\x00Label\x00cai":
+		return "Cai"
 	default:
 		return name
 	}
@@ -871,7 +885,8 @@ func normalizeJet4TabIndexes(
 }
 
 // jet4TypeInfoTabOrderIsComplete 判断 TypeInfo 是否包含可直接恢复 Tab 页层级的
-// 连续控件索引。索引有缺口表示存在后追加或隐藏目录项，此时仍应使用 Blob 物理顺序。
+// 连续控件索引。索引有缺口表示存在后追加或隐藏目录项，此时使用结构化 Page
+// 记录偏移和 Blob 物理顺序。
 func jet4TypeInfoTabOrderIsComplete(controls []FormControlInfo, indices []int) bool {
 	pageCount := 0
 	var minIndex uint32
