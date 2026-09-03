@@ -879,6 +879,9 @@ func TestExportAllFormsAsAccessJSON(t *testing.T) {
 	}
 	formNames := make([]string, 0, len(formIDs))
 	for name := range formIDs {
+		if isTemporaryAccessJSONExportFormName(name) {
+			continue
+		}
 		formNames = append(formNames, name)
 	}
 	sort.Strings(formNames)
@@ -985,6 +988,53 @@ func TestBuildAccessJSONDMSAccess2003WindowsParity(t *testing.T) {
 	testBuildAccessJSONWindowsParity(t,
 		filepath.Join("testdb", "mdbs", "dms-0812.mdb"),
 		filepath.Join("testdb", "dms", "export-format-2003", "*_org.json"))
+}
+
+// TestBuildAccessJSONDMS0902WindowsParity 验证 dms-0902.mdb 的全部窗体与
+// 当前 Windows Access COM 导出夹具保持逐字段一致。
+func TestBuildAccessJSONDMS0902WindowsParity(t *testing.T) {
+	testBuildAccessJSONWindowsParity(t,
+		filepath.Join("testdb", "mdbs", "dms-0902.mdb"),
+		filepath.Join("testdb", "dms", "export", "*_org.json"))
+}
+
+// TestAccessJSONExportDMS0902SkipsTemporaryForms 验证 Windows JSON 对比导出
+// 会排除 Access 内部残留的 ~TMPCLP 剪贴板窗体。
+func TestAccessJSONExportDMS0902SkipsTemporaryForms(t *testing.T) {
+	dbPath := filepath.Join("testdb", "mdbs", "dms-0902.mdb")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("skip integration test, db file not found: %s, err=%v", dbPath, err)
+	}
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	entries, err := db.ReadAccessObjectEntries()
+	if err != nil {
+		t.Fatalf("ReadAccessObjectEntries failed: %v", err)
+	}
+	formIDs, err := formStorageIDsFromEntries(entries)
+	if err != nil {
+		t.Fatalf("formStorageIDsFromEntries failed: %v", err)
+	}
+	userForms := 0
+	temporaryForms := 0
+	for name := range formIDs {
+		if isTemporaryAccessJSONExportFormName(name) {
+			temporaryForms++
+		} else {
+			userForms++
+		}
+	}
+	if userForms != 208 || temporaryForms != 6 {
+		t.Fatalf("user forms=%d temporary forms=%d want=208,6", userForms, temporaryForms)
+	}
+}
+
+// isTemporaryAccessJSONExportFormName 判断名称是否属于 Access 剪贴板临时窗体。
+func isTemporaryAccessJSONExportFormName(name string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(name)), "~TMPCLP")
 }
 
 // TestBuildAccessJSONHTSUSWindowsParity 验证 HTSUS-0807.mdb 的全部窗体与

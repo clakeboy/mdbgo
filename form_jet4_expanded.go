@@ -405,7 +405,7 @@ func parseJet4ExpandedNumericSet(
 	buttonDefaultHeight := parseJet4ButtonDefaultHeight(normalized)
 	optionButtonDefaultHeight := parseJet4OptionButtonDefaultHeight(normalized)
 	comboBoxDefaultWidth, comboBoxDefaultHeight := parseJet4ComboBoxDefaults(normalized)
-	rectangleDefaultHeight := parseJet4RectangleDefaultHeight(normalized)
+	rectangleDefaultWidth, rectangleDefaultHeight := parseJet4RectangleDefaults(normalized)
 	labelPrefixEnd := len(normalized)
 	for _, offset := range orderedFormControlOffsets(normalized, controls) {
 		if offset >= 0 && offset < labelPrefixEnd {
@@ -443,8 +443,8 @@ func parseJet4ExpandedNumericSet(
 				labelNames = append(labelNames, name)
 			}
 		case 0x65:
-			if props, ok := parseJet4RectangleNumericTailWithDefaultHeight(
-				record.compact, rectangleDefaultHeight); ok {
+			if props, ok := parseJet4RectangleNumericTailWithDefaults(
+				record.compact, rectangleDefaultWidth, rectangleDefaultHeight); ok {
 				result.rectangles[name] = props
 			}
 		case 0x6A:

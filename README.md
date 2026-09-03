@@ -188,12 +188,20 @@ go test -run TestExportFormAsAccessJSON -v -count=1
 `TestExportAllFormsAsAccessJSON` 批量导出指定 MDB 的全部窗体到目录，每个窗体输出一个 `<窗体名>.json` 文件，文件内容格式与 `TestExportFormAsAccessJSON` 一致：
 
 ```bash
-MDBGO_TEST_DB=testdb/mdbs/cai-0824.mdb \
-MDBGO_EXPORT_FORMS_DIR=testdb/cai/mdbgo \
+MDBGO_TEST_DB=testdb/mdbs/dms-0902.mdb \
+MDBGO_EXPORT_FORMS_DIR=testdb/dms/mdbgo \
 go test -run TestExportAllFormsAsAccessJSON -v -count=1
 ```
 
 使用方式：通过 `MDBGO_TEST_DB=/path/to/database.mdb` 指定要导出的 MDB 文件（缺省为 `testdb/mdbs/ABIQuery.mdb`），通过 `MDBGO_EXPORT_FORMS_DIR=/path/to/output_dir` 指定输出目录（目录不存在时自动创建）。单个窗体导出失败不会中断整体，其余窗体继续导出，测试结束时会统计成功与失败数量。
+
+### 对比 DMS JSON
+
+对比 `testdb/dms/export` 和 `testdb/dms/mdbgo` 中的 JSON 文件，并将结构化差异写入 `testdb/dms/diff.md`：
+
+```bash
+python3 compare_json.py
+```
 
 ## 说明
 

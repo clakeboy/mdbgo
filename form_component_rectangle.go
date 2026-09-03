@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const jet4RectangleBuiltInDefaultHeight = 720
+const (
+	jet4RectangleBuiltInDefaultWidth  = 720
+	jet4RectangleBuiltInDefaultHeight = 720
+)
 
 type jet4RectangleNumericProperties struct {
 	SpecialEffect    byte
@@ -82,11 +85,11 @@ func parseJet4FormRectangleProperties(data []byte, controls []FormControlInfo) m
 	if len(blocks) > 0 {
 		prefixEnd = blocks[0].offset
 	}
-	defaultHeight := parseJet4RectangleDefaultHeight(data[:prefixEnd])
+	defaultWidth, defaultHeight := parseJet4RectangleDefaults(data[:prefixEnd])
 	numericRecords := make([]jet4RectangleNumericProperties, 0, len(rectangles))
 	for _, block := range blocks {
 		tail := jet4ControlNumericTailForType(block.block, block.name, block.controlType)
-		props, ok := parseJet4RectangleNumericTailWithDefaultHeight(tail, defaultHeight)
+		props, ok := parseJet4RectangleNumericTailWithDefaults(tail, defaultWidth, defaultHeight)
 		if ok {
 			numericRecords = append(numericRecords, props)
 		}
@@ -97,10 +100,9 @@ func parseJet4FormRectangleProperties(data []byte, controls []FormControlInfo) m
 	return result
 }
 
-// parseJet4RectangleDefaultHeight 读取命名控件区之前的窗体级 Rectangle 模板。
-// 模板以 FD 65 00 开始；若模板省略 0x63 Height，则使用 Access 内建的
-// 720-twip 默认高度。
-func parseJet4RectangleDefaultHeight(prefix []byte) int {
+// parseJet4RectangleDefaults 读取命名控件区之前的窗体级 Rectangle 模板。
+// 模板以 FD 65 00 开始；若模板省略尺寸，则使用 Access 内建的 720 twips。
+func parseJet4RectangleDefaults(prefix []byte) (int, int) {
 	signature := []byte{0xFD, 0x65, 0x00}
 	for searchPos := 0; searchPos+len(signature) <= len(prefix); {
 		relative := bytes.Index(prefix[searchPos:], signature)
@@ -109,6 +111,7 @@ func parseJet4RectangleDefaultHeight(prefix []byte) int {
 		}
 		recordPos := searchPos + relative
 		pos := recordPos + len(signature)
+		width := jet4RectangleBuiltInDefaultWidth
 		height := jet4RectangleBuiltInDefaultHeight
 		isTemplate := false
 		for pos < len(prefix) && pos < recordPos+96 {
@@ -128,9 +131,12 @@ func parseJet4RectangleDefaultHeight(prefix []byte) int {
 					pos = len(prefix)
 					continue
 				}
-				if tag == 0x63 {
-					value := int(le16(prefix[pos+1:]))
-					if value > 0 && value <= 32767 {
+				value := int(le16(prefix[pos+1:]))
+				if value > 0 && value <= 32767 {
+					switch tag {
+					case 0x62:
+						width = value
+					case 0x63:
 						height = value
 					}
 				}
@@ -146,18 +152,37 @@ func parseJet4RectangleDefaultHeight(prefix []byte) int {
 			}
 		}
 		if isTemplate {
-			return height
+			return width, height
 		}
 		searchPos = recordPos + len(signature)
 	}
-	return jet4RectangleBuiltInDefaultHeight
+	return jet4RectangleBuiltInDefaultWidth, jet4RectangleBuiltInDefaultHeight
+}
+
+// parseJet4RectangleDefaultHeight 保留只读取模板高度的内部兼容入口。
+func parseJet4RectangleDefaultHeight(prefix []byte) int {
+	_, height := parseJet4RectangleDefaults(prefix)
+	return height
 }
 
 func parseJet4RectangleNumericTail(tail []byte) (jet4RectangleNumericProperties, bool) {
-	return parseJet4RectangleNumericTailWithDefaultHeight(tail, jet4RectangleBuiltInDefaultHeight)
+	return parseJet4RectangleNumericTailWithDefaults(
+		tail, jet4RectangleBuiltInDefaultWidth, jet4RectangleBuiltInDefaultHeight)
 }
 
 func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight int) (jet4RectangleNumericProperties, bool) {
+	return parseJet4RectangleNumericTailWithDefaults(
+		tail, jet4RectangleBuiltInDefaultWidth, defaultHeight)
+}
+
+// parseJet4RectangleNumericTailWithDefaults 使用窗体模板尺寸解析 Rectangle 记录。
+func parseJet4RectangleNumericTailWithDefaults(
+	tail []byte,
+	defaultWidth, defaultHeight int,
+) (jet4RectangleNumericProperties, bool) {
+	if defaultWidth <= 0 || defaultWidth > 32767 {
+		defaultWidth = jet4RectangleBuiltInDefaultWidth
+	}
 	if defaultHeight <= 0 || defaultHeight > 32767 {
 		defaultHeight = jet4RectangleBuiltInDefaultHeight
 	}
@@ -167,8 +192,8 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 		BackColor:      accessColorHex(0x00FFFFFF),
 		BackColorValue: 0x00FFFFFF,
 		BorderColor:    accessColorHex(0),
-		// Jet4 omits Height when it equals the form's Rectangle template.
-		Geometry: formControlGeometry{Height: defaultHeight},
+		// Jet4 在尺寸等于窗体 Rectangle 模板时会省略 Width 或 Height。
+		Geometry: formControlGeometry{Width: defaultWidth, Height: defaultHeight},
 	}
 	if len(tail) < 12 {
 		return result, false
@@ -205,7 +230,6 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 		return result, false
 	}
 
-	foundWidth := false
 	for pos := payloadPos; pos < len(tail); {
 		tag := tail[pos]
 		switch tag {
@@ -237,7 +261,6 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 				result.Geometry.Top = value
 			case 0x62:
 				result.Geometry.Width = value
-				foundWidth = true
 			case 0x63:
 				result.Geometry.Height = value
 			}
@@ -259,7 +282,7 @@ func parseJet4RectangleNumericTailWithDefaultHeight(tail []byte, defaultHeight i
 			pos++
 		}
 	}
-	if !foundWidth || result.BackStyle > 1 || result.BorderStyle > 1 ||
+	if result.BackStyle > 1 || result.BorderStyle > 1 ||
 		result.Geometry.Left > 32767 || result.Geometry.Top > 32767 ||
 		result.Geometry.Width <= 0 || result.Geometry.Width > 32767 ||
 		result.Geometry.Height <= 0 || result.Geometry.Height > 32767 {

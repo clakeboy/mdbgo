@@ -2479,6 +2479,16 @@ func TestParseJet4RectangleDefaultHeight(t *testing.T) {
 	}
 }
 
+// TestParseJet4RectangleDefaults 验证窗体模板可同时覆盖 Rectangle 默认尺寸。
+func TestParseJet4RectangleDefaults(t *testing.T) {
+	prefix := []byte{0xFD, 0x65, 0x00, 0x31, 0x03, 0x32, 0x00,
+		0x62, 0xC0, 0x03, 0x63, 0x84, 0x03, 0xFD, 0x67, 0x00}
+	width, height := parseJet4RectangleDefaults(prefix)
+	if width != 960 || height != 900 {
+		t.Fatalf("Rectangle defaults=(%d,%d) want=(960,900)", width, height)
+	}
+}
+
 func TestParseJet4RectangleNumericTail(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2578,6 +2588,93 @@ func TestParseJet4RectangleNumericTail(t *testing.T) {
 			t.Fatalf("Rectangle height=%d want form template height=900", got.Geometry.Height)
 		}
 	})
+
+	t.Run("form template supplies omitted width", func(t *testing.T) {
+		tail := []byte{0xFD, 0x65, 0x00, 0x31, 0x00, 0x34, 0x01,
+			0x60, 0x54, 0x15, 0x61, 0xE8, 0x08, 0x63, 0x94, 0x02, 0xDC, 0x0A}
+		got, ok := parseJet4RectangleNumericTailWithDefaults(tail, 720, 720)
+		if !ok {
+			t.Fatal("省略 Width 的 Rectangle 数值记录未被识别")
+		}
+		want := formControlGeometry{Left: 5460, Top: 2280, Width: 720, Height: 660}
+		if got.Geometry != want {
+			t.Fatalf("Rectangle geometry=%+v want=%+v", got.Geometry, want)
+		}
+	})
+}
+
+// TestJet4TabIndexesNeedNormalization 验证损坏判定只检查页内容器集合，
+// 不要求控件的物理顺序与手工 Tab 顺序一致。
+func TestJet4TabIndexesNeedNormalization(t *testing.T) {
+	controls := []FormControlInfo{
+		{Type: "TabControl", Name: "tabs", Index: 0},
+		{Type: "TabPage", Name: "page1", Index: 1},
+		{Type: "TextBox", Name: "first", Index: 2},
+		{Type: "Button", Name: "button", Index: 3},
+		{Type: "TextBox", Name: "last", Index: 4},
+		{Type: "TabPage", Name: "page2", Index: 5},
+		{Type: "TextBox", Name: "other", Index: 6},
+	}
+	offsets := []int{10, 20, 30, 40, 50, 60, 70}
+	buttons := map[string]jet4ButtonNumericProperties{
+		"button": {TabIndex: 0, HasTabIndex: true},
+	}
+	textBoxes := map[string]jet4FormNumericProperties{
+		"first": {TabIndex: 1, HasTabIndex: true},
+		"last":  {TabIndex: 2, HasTabIndex: true},
+		"other": {TabIndex: 0, HasTabIndex: true},
+	}
+	if jet4TabIndexesNeedNormalization(
+		controls, offsets, textBoxes, nil, buttons, nil, nil, nil, nil, nil,
+	) {
+		t.Fatal("完整但非单调的手工 Tab 顺序被误判为损坏")
+	}
+
+	buttons["button"] = jet4ButtonNumericProperties{TabIndex: 2, HasTabIndex: true}
+	textBoxes["first"] = jet4FormNumericProperties{TabIndex: 0, HasTabIndex: true}
+	textBoxes["last"] = jet4FormNumericProperties{TabIndex: 3, HasTabIndex: true}
+	if !jet4TabIndexesNeedNormalization(
+		controls, offsets, textBoxes, nil, buttons, nil, nil, nil, nil, nil,
+	) {
+		t.Fatal("页内缺少 TabIndex=1 时未识别为损坏")
+	}
+}
+
+// TestJet4ExpandedTabOrderCanNormalize 验证展开格式只接受单一两页容器。
+func TestJet4ExpandedTabOrderCanNormalize(t *testing.T) {
+	twoPages := []FormControlInfo{
+		{Type: "TabControl"}, {Type: "TabPage"}, {Type: "TabPage"},
+	}
+	if !jet4ExpandedTabOrderCanNormalize(twoPages) {
+		t.Fatal("单一两页容器应允许恢复 TabIndex")
+	}
+	threePages := append(append([]FormControlInfo(nil), twoPages...), FormControlInfo{Type: "TabPage"})
+	if jet4ExpandedTabOrderCanNormalize(threePages) {
+		t.Fatal("多页手工 Tab 顺序不应自动重排")
+	}
+}
+
+// TestNormalizeJet4TabIndexesCountsImplicitExpandedCheckBox 验证展开格式中省略
+// 显式序号的 CheckBox 仍占用页内 TabIndex。
+func TestNormalizeJet4TabIndexesCountsImplicitExpandedCheckBox(t *testing.T) {
+	controls := []FormControlInfo{
+		{Type: "TabControl", Name: "tabs", Index: 0},
+		{Type: "TabPage", Name: "page1", Index: 1},
+		{Type: "SubForm", Name: "table", Index: 2},
+		{Type: "CheckBox", Name: "enabled", Index: 3},
+		{Type: "TextBox", Name: "count", Index: 4},
+		{Type: "TabPage", Name: "page2", Index: 5},
+	}
+	textBoxes := map[string]jet4FormNumericProperties{"count": {}}
+	checkBoxes := map[string]jet4CheckBoxNumericProperties{"enabled": {}}
+	subForms := map[string]jet4SubFormNumericProperties{"table": {}}
+	normalizeJet4TabIndexes(
+		controls, []int{10, 20, 30, 40, 50, 60},
+		textBoxes, nil, nil, checkBoxes, nil, nil, subForms, nil, true,
+	)
+	if got := textBoxes["count"].TabIndex; got != 2 {
+		t.Fatalf("TextBox TabIndex=%d want=2", got)
+	}
 }
 
 func TestFormPropertyIDToNameAgainstInterop(t *testing.T) {

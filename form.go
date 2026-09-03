@@ -263,22 +263,6 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 	jet4SubFormProps := parseJet4FormSubFormProperties(jet4Data, controls)
 	jet4TabControlProps := parseJet4FormTabControlProperties(jet4Data, controls)
 	jet4TabPageProps := parseJet4FormTabPageProperties(jet4Data, controls, jet4TabControlProps)
-	if !expandedJet4 {
-		tabOrderOffsets := orderedFormControlOffsets(jet4Data, controls)
-		for i, control := range controls {
-			if control.Type != "TabPage" {
-				continue
-			}
-			if page, ok := jet4TabPageProps[strings.ToLower(control.Name)]; ok && page.HasRecordOffset {
-				tabOrderOffsets[i] = page.RecordOffset
-			}
-		}
-		normalizeJet4TabIndexes(
-			controls, tabOrderOffsets,
-			jet4NumericProps, jet4ComboBoxProps, jet4ButtonProps, jet4CheckBoxProps,
-			jet4OptionGroupProps, jet4OptionButtonProps, jet4SubFormProps, jet4TabControlProps,
-		)
-	}
 	jet4SectionProps := parseJet4FormSectionProperties(jet4Data, controls)
 	jet4FormWidth, jet4Geometries := parseJet4FormGeometries(jet4Data, controls)
 	if expandedJet4 {
@@ -350,6 +334,29 @@ func ParseFormContent(streams *FormObjectStreams) (*FormContent, error) {
 		formProps = mergeFormProperties(jet4FormProps, nil)
 	} else {
 		formProps = mergeFormProperties(formProps, jet4FormProps)
+	}
+	tabOrderOffsets := orderedFormControlOffsets(jet4Data, controls)
+	for i, control := range controls {
+		if control.Type != "TabPage" {
+			continue
+		}
+		if page, ok := jet4TabPageProps[strings.ToLower(control.Name)]; ok && page.HasRecordOffset {
+			tabOrderOffsets[i] = page.RecordOffset
+		}
+	}
+	needsTabIndexNormalization := jet4TabIndexesNeedNormalization(
+		controls, tabOrderOffsets,
+		jet4NumericProps, jet4ComboBoxProps, jet4ButtonProps, jet4CheckBoxProps,
+		jet4OptionGroupProps, jet4OptionButtonProps, jet4SubFormProps, jet4TabControlProps,
+	)
+	if !expandedJet4 || (needsTabIndexNormalization &&
+		jet4ExpandedTabOrderCanNormalize(controls)) {
+		normalizeJet4TabIndexes(
+			controls, tabOrderOffsets,
+			jet4NumericProps, jet4ComboBoxProps, jet4ButtonProps, jet4CheckBoxProps,
+			jet4OptionGroupProps, jet4OptionButtonProps, jet4SubFormProps, jet4TabControlProps,
+			expandedJet4,
+		)
 	}
 	if defaultView, ok := parseJet4FormDefaultView(jet4Data); ok {
 		defaultViewProperty := FormProperty{
@@ -763,6 +770,7 @@ func normalizeJet4TabIndexes(
 	optionButtons map[string]jet4OptionButtonNumericProperties,
 	subForms map[string]jet4SubFormNumericProperties,
 	tabControls map[string]jet4TabControlNumericProperties,
+	consumeImplicitCheckBoxes bool,
 ) {
 	indices := make([]int, 0, len(controls))
 	for i, offset := range offsets {
@@ -848,7 +856,8 @@ func normalizeJet4TabIndexes(
 				consumed = true
 			}
 		case "CheckBox":
-			if props, ok := checkBoxes[key]; ok && (props.HasTabIndex || nextIndex == 0) {
+			if props, ok := checkBoxes[key]; ok &&
+				(props.HasTabIndex || nextIndex == 0 || consumeImplicitCheckBoxes) {
 				props.TabIndex = nextIndex
 				props.HasTabIndex = true
 				checkBoxes[key] = props
@@ -881,6 +890,174 @@ func normalizeJet4TabIndexes(
 		if consumed {
 			nextIndex++
 		}
+	}
+}
+
+// jet4ExpandedTabOrderCanNormalize 判断展开格式是否有无歧义的页边界。
+// 当前只在单个两页容器内恢复损坏序号；多页窗体常保存稀疏的手工 Tab 顺序，
+// 继续保留命名记录值，避免把合法空位误判为损坏。
+func jet4ExpandedTabOrderCanNormalize(controls []FormControlInfo) bool {
+	tabControlCount := 0
+	tabPageCount := 0
+	for _, control := range controls {
+		switch control.Type {
+		case "TabControl":
+			tabControlCount++
+		case "TabPage":
+			tabPageCount++
+		}
+	}
+	return tabControlCount == 1 && tabPageCount == 2
+}
+
+// jet4TabIndexesNeedNormalization 判断展开格式中的页内 TabIndex 是否损坏。
+// 合法页内所有可聚焦控件的序号构成无重复的 0..N-1 集合；手工调整后的
+// 控件物理顺序可以与序号不同，因此不能用单调性作为判据。
+func jet4TabIndexesNeedNormalization(
+	controls []FormControlInfo,
+	offsets []int,
+	textBoxes map[string]jet4FormNumericProperties,
+	comboBoxes map[string]jet4ComboBoxNumericProperties,
+	buttons map[string]jet4ButtonNumericProperties,
+	checkBoxes map[string]jet4CheckBoxNumericProperties,
+	optionGroups map[string]jet4OptionGroupNumericProperties,
+	optionButtons map[string]jet4OptionButtonNumericProperties,
+	subForms map[string]jet4SubFormNumericProperties,
+	tabControls map[string]jet4TabControlNumericProperties,
+) bool {
+	indices := make([]int, 0, len(controls))
+	for index, offset := range offsets {
+		if offset >= 0 {
+			indices = append(indices, index)
+		}
+	}
+	if jet4TypeInfoTabOrderIsComplete(controls, indices) {
+		sort.Slice(indices, func(i, j int) bool {
+			return controls[indices[i]].Index < controls[indices[j]].Index
+		})
+	} else {
+		sort.Slice(indices, func(i, j int) bool { return offsets[indices[i]] < offsets[indices[j]] })
+	}
+
+	activePage := false
+	lastPage := false
+	tabTop := 0
+	hasTabTop := false
+	pageTabIndexes := make(map[int]bool)
+	pageControlCount := 0
+	pageIndexesInvalid := func() bool {
+		if pageControlCount == 0 {
+			return false
+		}
+		if len(pageTabIndexes) != pageControlCount {
+			return true
+		}
+		for tabIndex := 0; tabIndex < pageControlCount; tabIndex++ {
+			if !pageTabIndexes[tabIndex] {
+				return true
+			}
+		}
+		return false
+	}
+	for order, index := range indices {
+		control := controls[index]
+		if control.Type == "TabControl" {
+			if activePage && pageIndexesInvalid() {
+				return true
+			}
+			activePage = false
+			lastPage = false
+			props, ok := tabControls[strings.ToLower(control.Name)]
+			hasTabTop = ok && props.HasGeometry
+			if hasTabTop {
+				tabTop = props.Geometry.Top
+			}
+			continue
+		}
+		if control.Type == "TabPage" {
+			if activePage && pageIndexesInvalid() {
+				return true
+			}
+			activePage = true
+			lastPage = true
+			pageTabIndexes = make(map[int]bool)
+			pageControlCount = 0
+			for next := order + 1; next < len(indices); next++ {
+				nextType := controls[indices[next]].Type
+				if nextType == "TabPage" {
+					lastPage = false
+					break
+				}
+				if nextType == "TabControl" {
+					break
+				}
+			}
+			continue
+		}
+		if !activePage {
+			continue
+		}
+		key := strings.ToLower(control.Name)
+		if lastPage && hasTabTop {
+			if top, ok := jet4FocusableControlTop(
+				control.Type, key, textBoxes, comboBoxes, buttons, checkBoxes,
+				optionGroups, optionButtons, subForms,
+			); ok && top < tabTop {
+				activePage = false
+				continue
+			}
+		}
+		tabIndex, hasTabIndex, known := jet4ControlTabIndex(
+			control.Type, key, textBoxes, comboBoxes, buttons, checkBoxes,
+			optionGroups, optionButtons, subForms,
+		)
+		if !known || (!hasTabIndex && control.Type != "TextBox" && control.Type != "ComboBox") {
+			continue
+		}
+		pageControlCount++
+		if tabIndex < 0 || pageTabIndexes[tabIndex] {
+			return true
+		}
+		pageTabIndexes[tabIndex] = true
+	}
+	return activePage && pageIndexesInvalid()
+}
+
+// jet4ControlTabIndex 返回可聚焦控件解析到的 TabIndex 及其显式保存状态。
+func jet4ControlTabIndex(
+	controlType, key string,
+	textBoxes map[string]jet4FormNumericProperties,
+	comboBoxes map[string]jet4ComboBoxNumericProperties,
+	buttons map[string]jet4ButtonNumericProperties,
+	checkBoxes map[string]jet4CheckBoxNumericProperties,
+	optionGroups map[string]jet4OptionGroupNumericProperties,
+	optionButtons map[string]jet4OptionButtonNumericProperties,
+	subForms map[string]jet4SubFormNumericProperties,
+) (int, bool, bool) {
+	switch controlType {
+	case "TextBox":
+		props, ok := textBoxes[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "ComboBox":
+		props, ok := comboBoxes[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "Button":
+		props, ok := buttons[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "CheckBox":
+		props, ok := checkBoxes[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "OptionGroup":
+		props, ok := optionGroups[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "OptionButton":
+		props, ok := optionButtons[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	case "SubForm":
+		props, ok := subForms[key]
+		return props.TabIndex, props.HasTabIndex, ok
+	default:
+		return 0, false, false
 	}
 }
 
