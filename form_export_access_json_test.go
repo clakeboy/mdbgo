@@ -1775,3 +1775,87 @@ func compareControlJSON(a, b *accessRawJSONControl, prefix string, diffs *[]stri
 		}
 	}
 }
+
+// TestExpandedTabIndexesDMS0902PreservesManualOrder 验证真实四页窗体在另一页损坏时仍保留手工顺序。
+// 只改内存中的展开属性值，不写入 MDB；未改动控件仍与 Windows 参考夹具一致。
+func TestExpandedTabIndexesDMS0902PreservesManualOrder(t *testing.T) {
+	dbPath := filepath.Join("testdb", "mdbs", "dms-0902.mdb")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Skipf("fixture not found: %v", err)
+	}
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	streams, err := db.ReadFormObjectStreams("f_abi_entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams.Blob = append([]byte(nil), streams.Blob...)
+	// 第一页交换显式的 1、2；第三页把 2 改为重复的 1。
+	replacement := map[string]int{"entry_no": 2, "entry_duty_amt": 1, "entry_date": 1}
+	changed := map[string]bool{}
+	for _, record := range parseJet4ExpandedNamedRecords(streams.Blob) {
+		value, exists := replacement[record.name]
+		if !exists {
+			continue
+		}
+		fields, _, ok := readJet4ExpandedFields(streams.Blob, record.offset+6)
+		if !ok {
+			fields, _, ok = readJet4ExpandedFields(streams.Blob, record.offset+8)
+		}
+		if !ok {
+			t.Fatal("无法读取展开控件记录")
+		}
+		for _, field := range fields {
+			if field.propertyID == 0x0105 && len(field.value) == 2 {
+				streams.Blob[field.valueStart] = byte(value)
+				streams.Blob[field.valueStart+1] = byte(value >> 8)
+				changed[record.name] = true
+			}
+		}
+	}
+	if len(changed) != len(replacement) {
+		t.Fatalf("未找到全部目标字段: %v", changed)
+	}
+	content, err := ParseFormContent(streams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join("testdb", "dms", "export", "f_abi_entry_org.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected accessRawJSONForm
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatal(err)
+	}
+	indexes := map[string]int{}
+	var walk func([]accessRawJSONControl)
+	walk = func(controls []accessRawJSONControl) {
+		for _, control := range controls {
+			if control.TabIndex != nil {
+				indexes[control.Name] = *control.TabIndex
+			}
+			walk(control.Tabs)
+			if control.ClassType != "Table" {
+				walk(control.Controls)
+			}
+		}
+	}
+	walk(expected.Controls)
+	indexes["entry_no"], indexes["entry_duty_amt"] = 2, 1
+	checked := 0
+	for _, control := range content.Controls {
+		if want, ok := indexes[control.Name]; ok {
+			checked++
+			if control.TabIndex != want {
+				t.Errorf("%s TabIndex=%d want=%d", control.Name, control.TabIndex, want)
+			}
+		}
+	}
+	if checked != len(indexes) {
+		t.Fatalf("验证控件数=%d want=%d", checked, len(indexes))
+	}
+}
